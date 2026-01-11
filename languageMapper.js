@@ -36,19 +36,19 @@ const languageMap = {
     'ur': 'ur-IN',
 };
 
-// Azure Neural Voice names for each language
+// Google Cloud TTS Voice names
 const voiceMap = {
-    'en-US': 'en-US-JennyNeural',
-    'hi-IN': 'hi-IN-SwaraNeural',
-    'mr-IN': 'mr-IN-AarohiNeural',
-    'bn-IN': 'bn-IN-BashkarNeural',
-    'ta-IN': 'ta-IN-PallaviNeural',
-    'te-IN': 'te-IN-ShrutiNeural',
-    'ml-IN': 'ml-IN-SobhanaNeural',
-    'kn-IN': 'kn-IN-SapnaNeural',
-    'pa-IN': 'pa-IN-GulNeural',
-    'gu-IN': 'gu-IN-DhwaniNeural',
-    'ur-IN': 'ur-IN-GulNeural',
+    'en-US': 'en-US-Standard-C',     // Female, Standard (Safer than Neural2)
+    'hi-IN': 'hi-IN-Neural2-B',     // Male, Neural (or A/C/D)
+    'mr-IN': 'mr-IN-Standard-A',
+    'bn-IN': 'bn-IN-Standard-A',
+    'ta-IN': 'ta-IN-Standard-A',
+    'te-IN': 'te-IN-Standard-A',
+    'ml-IN': 'ml-IN-Standard-A',
+    'kn-IN': 'kn-IN-Standard-A',
+    'pa-IN': 'pa-IN-Standard-A',
+    'gu-IN': 'gu-IN-Standard-A',
+    'ur-IN': 'ur-IN-Standard-A',
 };
 
 function mapLanguageCode(langCode) {
@@ -82,8 +82,8 @@ function getVoiceNameForLang(langCode) {
     }
 
     // Default to English voice if not found
-    console.warn(`No voice found for ${langCode}, using en-US-JennyNeural`);
-    return 'en-US-JennyNeural';
+    console.warn(`No voice found for ${langCode}, using en-US-Standard-C`);
+    return 'en-US-Standard-C';
 }
 
 module.exports = { mapLanguageCode, getVoiceNameForLang };

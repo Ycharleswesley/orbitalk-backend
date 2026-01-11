@@ -83,7 +83,14 @@ wss.on('connection', (ws) => {
 
             if (clientData.speechService && clientData.speechService.pushStream) {
                 try {
-                    // console.log("Received PCM:", message.length);
+                    // Debug: Check for silence (all zeros)
+                    const firstBytes = message.slice(0, 5);
+                    const isSilence = message.every(byte => byte === 0);
+
+                    if (Math.random() < 0.05) { // Log only 5% of packets to reduce spam but keep visibility
+                        console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes. Silence? ${isSilence}. First 5: ${firstBytes.join(',')}`);
+                    }
+
                     clientData.speechService.pushStream.write(message);
                 } catch (e) {
                     console.error('Error writing to push stream:', e);
@@ -178,12 +185,16 @@ async function handleRecognizedText(ws, text) {
             console.log(`[${clientData.id}] Sent transcript to speaker`);
         }
 
-        const audioBuffer = await speechService.synthesizeSpeechWAV(
+        const { synthesizeSpeech } = require('./googleTtsService');
+
+        // ... (inside handleRecognizedText) ...
+
+        const audioBuffer = await synthesizeSpeech(
             translatedText,
             clientData.config.targetLang,  // Use full code for TTS (en-US)
             clientData.config.voiceName
         );
-        console.log(`[${clientData.id}] Synthesized WAV audio size: ${audioBuffer.byteLength}`);
+        console.log(`[${clientData.id}] Synthesized WAV audio (Google TTS) size: ${audioBuffer.byteLength}`);
 
         // Broadcast audio and transcript to OTHER users in the room
         const room = rooms.get(clientData.roomId);

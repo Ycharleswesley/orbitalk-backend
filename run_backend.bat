@@ -1,0 +1,6 @@
+@echo off
+echo Setting up environment for OrbiTalk Backend...
+set "PATH=%PATH%;C:\Program Files\nodejs"
+echo Starting Backend...
+node server.js
+pause
