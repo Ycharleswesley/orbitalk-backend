@@ -60,15 +60,15 @@ function recognizeSpeech(languageCode, onTextRecognized, onInterimText) {
             pushStream.write(buffer);
         },
         close: () => {
-            recognizer.stopContinuousRecognitionAsync(() => {
-                recognizer.close();
-                pushStream.close();
-            });
-        } catch(e) {
-            console.error('(AzureSpeech) Error closing:', e);
+            console.log('(GoogleSpeech) Closing recognition stream');
+            try {
+                if (pushStream) pushStream.end();
+                if (recognizeStream) recognizeStream.end();
+            } catch (e) {
+                console.error('(GoogleSpeech) Error closing streams:', e);
+            }
         }
-    }
-};
+    };
 }
 
 module.exports = { recognizeSpeech };
