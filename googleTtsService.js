@@ -25,8 +25,9 @@ async function synthesizeSpeech(text, languageCode, voiceName) {
             name: voiceName, // e.g. 'en-US-Neural2-J'
         },
         audioConfig: {
-            audioEncoding: 'MP3', // Output format
-            effectsProfileId: ['telephony-class-application'], // Optimize for phone audio
+            audioEncoding: 'LINEAR16', // Output format (Raw PCM for SoundStream)
+            sampleRateHertz: 16000,   // Match frontend sample rate
+            effectsProfileId: ['telephony-class-application'],
         },
     };
 
