@@ -219,7 +219,7 @@ async function handleRecognizedText(ws, text) {
             console.log(`[${clientData.id}] Sent transcript to speaker`);
         }
 
-        const { synthesizeSpeech } = require('./azureTtsService');
+        const { synthesizeSpeech } = require('./googleTtsService');
 
         // ... (inside handleRecognizedText) ...
 

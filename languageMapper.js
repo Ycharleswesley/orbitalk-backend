@@ -36,19 +36,19 @@ const languageMap = {
     'ur': 'ur-IN',
 };
 
-// Azure Neural Voice names
+// Google Cloud Voice names
 const voiceMap = {
-    'en-US': 'en-US-JennyNeural',
-    'hi-IN': 'hi-IN-SwaraNeural',
-    'mr-IN': 'mr-IN-AarohiNeural',
-    'bn-IN': 'bn-IN-TanishaaNeural',
-    'ta-IN': 'ta-IN-PallaviNeural',
-    'te-IN': 'te-IN-ShrutiNeural',
-    'ml-IN': 'ml-IN-SobhanaNeural',
-    'kn-IN': 'kn-IN-SapnaNeural',
-    'pa-IN': 'pa-IN-OjasNeural',
-    'gu-IN': 'gu-IN-DhwaniNeural',
-    'ur-IN': 'ur-IN-GulNeural',
+    'en-US': 'en-US-Neural2-J',      // English (US)
+    'hi-IN': 'hi-IN-Neural2-A',      // Hindi
+    'mr-IN': 'mr-IN-Wavenet-A',      // Marathi
+    'bn-IN': 'bn-IN-Wavenet-A',      // Bengali
+    'ta-IN': 'ta-IN-Wavenet-A',      // Tamil
+    'te-IN': 'te-IN-Standard-A',     // Telugu (Wavenet might not be available in all tiers, Standard is safe)
+    'ml-IN': 'ml-IN-Wavenet-A',      // Malayalam
+    'kn-IN': 'kn-IN-Wavenet-A',      // Kannada
+    'pa-IN': 'pa-IN-Wavenet-A',      // Punjabi
+    'gu-IN': 'gu-IN-Wavenet-A',      // Gujarati
+    'ur-IN': 'ur-IN-Wavenet-A',      // Urdu (India)
 };
 
 function mapLanguageCode(langCode) {
