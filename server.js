@@ -89,13 +89,8 @@ wss.on('connection', (ws, req) => {
                 console.error('Error parsing JSON message:', e);
             }
         } else {
-            // HALF-DUPLEX: Gate incoming audio if this client is currently hearing TTS
-            // This prevents the microphone from picking up TTS audio and creating echo
-            if (clientData.isSpeaking) {
-                // Silently drop audio - client is hearing TTS playback
-                // console.log(`[${clientData.id}] Gating audio - TTS playing`);
-                return;
-            }
+            // HALF-DUPLEX REMOVED: Allow Full Duplex (Simultaneous Talk & Listen)
+            // if (clientData.isSpeaking) { return; }
 
             if (clientData.speechService) {
                 try {
@@ -109,15 +104,10 @@ wss.on('connection', (ws, req) => {
                         }
                     }
 
-                    if (clientData.isSpeaking) {
-                        return;
+                    if (isSilence) {
+                        // console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes (SILENCE detected)`);
                     } else {
-                        if (isSilence) {
-                            console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes (SILENCE detected - may cause timeout)`);
-                        } else {
-                            // Reduce log spam, only log every 10th packet or if verbose
-                            // console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes`);
-                        }
+                        // console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes`);
                     }
 
                     // Write to speech service
