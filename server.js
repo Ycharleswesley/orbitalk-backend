@@ -227,7 +227,14 @@ async function handleRecognizedText(ws, text) {
         if (room) {
             // Calculate how long the TTS audio will play
             const playbackDurationMs = calculatePlaybackDurationMs(audioBuffer);
-            console.log(`[${clientData.id}] TTS generated successfully. Size: ${audioBuffer.byteLength} bytes. Duration: ${playbackDurationMs.toFixed(0)}ms`);
+            // Verify room state
+            console.log(`[${clientData.id}] TTS generated successfully. Size: ${audioBuffer.byteLength} bytes. Duration: ${playbackDurationMs.toFixed(0)}ms. Room Size: ${room.size}`);
+
+            // DEBUG: Echo back to speaker if they are alone (for testing)
+            if (room.size === 1) {
+                console.log(`[${clientData.id}] TEST MODE: Echoing TTS back to speaker because room is empty.`);
+                ws.send(audioBuffer);
+            }
 
             room.forEach(client => {
                 if (client !== ws && client.readyState === WebSocket.OPEN) {
