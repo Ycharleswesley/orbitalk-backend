@@ -182,8 +182,29 @@ function handleConfigMessage(ws, clientData, config) {
     const roomSize = rooms.get(roomId).size;
     console.log(`Client ${clientData.id} joined room ${roomId} (Total Users: ${roomSize})`);
 
+    // Notify room of new user count
+    broadcastRoomUpdate(roomId);
+
     // Start Speech Service with Auto-Restart
     startSpeechService(ws, clientData);
+}
+
+function broadcastRoomUpdate(roomId) {
+    if (!rooms.has(roomId)) return;
+    const room = rooms.get(roomId);
+    const count = room.size;
+
+    const updateMsg = JSON.stringify({
+        type: 'room_update',
+        userCount: count
+    });
+
+    room.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(updateMsg);
+        }
+    });
+}
 
     // (Old inline code removed)
 }
