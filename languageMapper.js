@@ -36,19 +36,19 @@ const languageMap = {
     'ur': 'ur-IN',
 };
 
-// Google Cloud TTS Voice names
+// Azure Neural Voice names
 const voiceMap = {
-    'en-US': 'en-US-Standard-C',     // Female, Standard (Safer than Neural2)
-    'hi-IN': 'hi-IN-Neural2-B',     // Male, Neural (or A/C/D)
-    'mr-IN': 'mr-IN-Standard-A',
-    'bn-IN': 'bn-IN-Standard-A',
-    'ta-IN': 'ta-IN-Standard-A',
-    'te-IN': 'te-IN-Standard-A',
-    'ml-IN': 'ml-IN-Standard-A',
-    'kn-IN': 'kn-IN-Standard-A',
-    'pa-IN': 'pa-IN-Standard-A',
-    'gu-IN': 'gu-IN-Standard-A',
-    'ur-IN': 'ur-IN-Standard-A',
+    'en-US': 'en-US-JennyNeural',
+    'hi-IN': 'hi-IN-SwaraNeural',
+    'mr-IN': 'mr-IN-AarohiNeural',
+    'bn-IN': 'bn-IN-TanishaaNeural',
+    'ta-IN': 'ta-IN-PallaviNeural',
+    'te-IN': 'te-IN-ShrutiNeural',
+    'ml-IN': 'ml-IN-SobhanaNeural',
+    'kn-IN': 'kn-IN-SapnaNeural',
+    'pa-IN': 'pa-IN-OjasNeural',
+    'gu-IN': 'gu-IN-DhwaniNeural',
+    'ur-IN': 'ur-IN-GulNeural',
 };
 
 function mapLanguageCode(langCode) {

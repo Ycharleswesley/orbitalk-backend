@@ -46,8 +46,9 @@ function calculatePlaybackDurationMs(audioBuffer) {
 
 console.log(`WebSocket server started on port ${PORT}`);
 
-wss.on('connection', (ws) => {
-    console.log('New client connected');
+wss.on('connection', (ws, req) => {
+    const remoteIp = req.socket.remoteAddress;
+    console.log(`New client connected from IP: ${remoteIp}`);
     const clientId = uuidv4();
 
     clients.set(ws, {
@@ -87,11 +88,35 @@ wss.on('connection', (ws) => {
                     const firstBytes = message.slice(0, 5);
                     const isSilence = message.every(byte => byte === 0);
 
-                    if (Math.random() < 0.05) { // Log only 5% of packets to reduce spam but keep visibility
-                        console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes. Silence? ${isSilence}. First 5: ${firstBytes.join(',')}`);
+                    // Debug: Log incoming audio to verify stream
+                    if (clientData.isSpeaking) {
+                        console.log(`[${clientData.id}] Audio GATED (TTS playing)`);
+                    } else {
+                        console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes`);
                     }
 
-                    clientData.speechService.pushStream.write(message);
+                    // Auto-Restart Logic
+                    if (!clientData.speechService || !clientData.speechService.pushStream || clientData.speechService.pushStream.destroyed) {
+                        console.log(`[${clientData.id}] Speech stream dead/destroyed. RESTARTING...`);
+                        if (clientData.speechService) {
+                            try { clientData.speechService.close(); } catch (e) { }
+                        }
+                        if (clientData.config) {
+                            clientData.speechService = speechService.recognizeSpeech(
+                                clientData.config.sourceLang,
+                                (text) => handleRecognizedText(ws, text),
+                                (text) => console.log(`[${clientData.id}] Recognizing: ${text}`)
+                            );
+                        }
+                    }
+
+                    try {
+                        if (clientData.speechService && clientData.speechService.pushStream && !clientData.speechService.pushStream.destroyed) {
+                            clientData.speechService.pushStream.write(message);
+                        }
+                    } catch (e) {
+                        console.log(`[${clientData.id}] Stream write error:`, e.message);
+                    }
                 } catch (e) {
                     console.error('Error writing to push stream:', e);
                 }
@@ -141,7 +166,8 @@ function handleConfigMessage(ws, clientData, config) {
         rooms.set(roomId, new Set());
     }
     rooms.get(roomId).add(ws);
-    console.log(`Client ${clientData.id} joined room ${roomId}`);
+    const roomSize = rooms.get(roomId).size;
+    console.log(`Client ${clientData.id} joined room ${roomId} (Total Users: ${roomSize})`);
 
     if (clientData.speechService) {
         clientData.speechService.close();
@@ -185,7 +211,7 @@ async function handleRecognizedText(ws, text) {
             console.log(`[${clientData.id}] Sent transcript to speaker`);
         }
 
-        const { synthesizeSpeech } = require('./googleTtsService');
+        const { synthesizeSpeech } = require('./azureTtsService');
 
         // ... (inside handleRecognizedText) ...
 
@@ -201,7 +227,7 @@ async function handleRecognizedText(ws, text) {
         if (room) {
             // Calculate how long the TTS audio will play
             const playbackDurationMs = calculatePlaybackDurationMs(audioBuffer);
-            console.log(`[${clientData.id}] TTS playback duration: ${playbackDurationMs.toFixed(0)}ms`);
+            console.log(`[${clientData.id}] TTS generated successfully. Size: ${audioBuffer.byteLength} bytes. Duration: ${playbackDurationMs.toFixed(0)}ms`);
 
             room.forEach(client => {
                 if (client !== ws && client.readyState === WebSocket.OPEN) {

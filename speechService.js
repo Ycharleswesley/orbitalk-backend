@@ -1,62 +1,96 @@
-const speech = require('@google-cloud/speech');
-const path = require('path');
+const sdk = require('microsoft-cognitiveservices-speech-sdk');
 require('dotenv').config();
 
-// Explicitly point to the JSON key file (Standardizing with googleTtsService.js)
-const keyFilename = path.join(__dirname, 'orbitalk-71684-052d52ec0144.json');
-
-// Initialize Google Speech Client
-const client = new speech.SpeechClient({
-    keyFilename: keyFilename
-});
-
 function recognizeSpeech(sourceLang, onRecognized, onRecognizing) {
-    console.log(`(GoogleSpeech) Initializing stream for language: ${sourceLang}`);
+    if (!process.env.AZURE_SPEECH_KEY || !process.env.AZURE_SPEECH_REGION) {
+        console.error('AZURE_SPEECH_KEY or AZURE_SPEECH_REGION not set!');
+        return { pushStream: null, close: () => { } };
+    }
 
-    const request = {
-        config: {
-            encoding: 'LINEAR16',
-            sampleRateHertz: 16000,
-            languageCode: sourceLang,
-            enableAutomaticPunctuation: true,
-            model: 'default', // 'latest_long' or 'command_and_search' might be better for some languages
-        },
-        interimResults: true, // Needed for 'Recognizing' events
+    const speechConfig = sdk.SpeechConfig.fromSubscription(
+        process.env.AZURE_SPEECH_KEY,
+        process.env.AZURE_SPEECH_REGION
+    );
+
+    speechConfig.speechRecognitionLanguage = sourceLang;
+
+    // Create a PushAudioInputStream to push audio data from WebSocket
+    const pushStream = sdk.AudioInputStream.createPushStream();
+
+    // Create AudioConfig from the push stream
+    const audioConfig = sdk.AudioConfig.fromStreamInput(pushStream);
+
+    // Create the SpeechRecognizer
+    const recognizer = new sdk.SpeechRecognizer(speechConfig, audioConfig);
+
+    console.log(`(AzureSpeech) Initializing recognition for: ${sourceLang}`);
+
+    recognizer.recognizing = (s, e) => {
+        if (e.result.text) {
+            console.log(`(AzureSpeech) Recognizing: ${e.result.text}`);
+            if (onRecognizing) onRecognizing(e.result.text);
+        }
     };
 
-    // Create a streaming recognition stream
-    const recognizeStream = client
-        .streamingRecognize(request)
-        .on('error', (error) => {
-            console.error(`(GoogleSpeech) Stream Error: ${error}`);
-            // Don't crash the server, just log
-        })
-        .on('data', (data) => {
-            // Check if results exist
-            if (data.results[0] && data.results[0].alternatives[0]) {
-                const result = data.results[0];
-                const transcript = result.alternatives[0].transcript;
+    recognizer.recognized = (s, e) => {
+        if (e.result.reason === sdk.ResultReason.RecognizedSpeech) {
+            console.log(`(AzureSpeech) Recognized: ${e.result.text}`);
+            if (onRecognized) onRecognized(e.result.text);
+        } else if (e.result.reason === sdk.ResultReason.NoMatch) {
+            console.log('(AzureSpeech) NOMATCH: Speech could not be recognized.');
+        }
+    };
 
-                if (result.isFinal) {
-                    console.log(`(GoogleSpeech) Recognized: ${transcript}`);
-                    if (onRecognized) onRecognized(transcript);
-                } else {
-                    console.log(`(GoogleSpeech) Recognizing: ${transcript}`);
-                    if (onRecognizing) onRecognizing(transcript);
-                }
-            }
-        })
-        .on('end', () => {
-            console.log('(GoogleSpeech) Stream ended.');
-        });
+    recognizer.canceled = (s, e) => {
+        console.log(`(AzureSpeech) CANCELED: Reason=${e.reason}`);
+        if (e.reason === sdk.CancellationReason.Error) {
+            console.log(`(AzureSpeech) ErrorDetails=${e.errorDetails}`);
+        }
+        recognizer.stopContinuousRecognitionAsync();
+    };
 
-    // Provide the interface expected by server.js
+    recognizer.sessionStopped = (s, e) => {
+        console.log('(AzureSpeech) Session stopped.');
+        recognizer.stopContinuousRecognitionAsync();
+    };
+
+    // Start recognition
+    recognizer.startContinuousRecognitionAsync();
+
+    // Create a wrapper to match the interface expected by server.js
     return {
-        pushStream: recognizeStream, // Google stream is a Writable Stream, compatible with .write()
+        // server.js calls pushStream.write(buffer)
+        pushStream: {
+            write: (buffer) => {
+                try {
+                    pushStream.write(buffer);
+                } catch (err) {
+                    console.error('(AzureSpeech) Error writing to push stream:', err);
+                }
+            },
+            close: () => {
+                try {
+                    pushStream.close();
+                } catch (err) {
+                    console.error('(AzureSpeech) Error closing push stream:', err);
+                }
+            },
+            destroy: () => {
+                try {
+                    pushStream.close();
+                } catch (err) { }
+            }
+        },
         close: () => {
-            console.log('(GoogleSpeech) Closing stream.');
-            recognizeStream.end();
-            recognizeStream.destroy();
+            console.log('(AzureSpeech) Closing recognizer.');
+            try {
+                recognizer.stopContinuousRecognitionAsync(() => {
+                    recognizer.close();
+                    pushStream.close();
+                });
+            } catch (e) {
+                console.error('(AzureSpeech) Error closing:', e);
+            }
         }
     };
 }

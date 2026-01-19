@@ -5,12 +5,15 @@ const path = require('path');
 require('dotenv').config();
 
 // Initialize the client
-// We explicitly point to the JSON key file to ensure it's found
-const keyFilename = path.join(__dirname, 'orbitalk-71684-052d52ec0144.json');
+// Initialize Google TTS Client
+let clientConfig = {};
+if (process.env.GOOGLE_CREDENTIALS_JSON) {
+    clientConfig.credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+} else {
+    clientConfig.keyFilename = path.join(__dirname, 'orbitalk-71684-052d52ec0144.json');
+}
 
-const client = new textToSpeech.TextToSpeechClient({
-    keyFilename: keyFilename
-});
+const client = new textToSpeech.TextToSpeechClient(clientConfig);
 
 /**
  * Synthesize speech from text using Google Cloud TTS

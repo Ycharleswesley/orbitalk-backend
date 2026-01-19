@@ -1,5 +1,9 @@
 node_modules/
 .env
+*.json
+!package.json
+!package-lock.json
+orbitalk-71684-052d52ec0144.json
 *.pcm
 *.wav
 *.log
