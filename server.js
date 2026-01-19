@@ -206,8 +206,7 @@ function broadcastRoomUpdate(roomId) {
     });
 }
 
-    // (Old inline code removed)
-}
+
 
 function startSpeechService(ws, clientData) {
     if (clientData.speechService) {
