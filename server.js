@@ -103,9 +103,13 @@ wss.on('connection', (ws, req) => {
 
                     // Write to speech service
                     try {
-                        clientData.speechService.write(message);
+                        if (clientData.speechService) {
+                            clientData.speechService.write(message);
+                        }
                     } catch (e) {
                         console.log(`[${clientData.id}] Stream write error:`, e.message);
+                        // Optional: trigger restart manually if somehow the error callback didn't fire
+                        // But for now, let's rely on speechService.js emitting 'error'
                     }
                 } catch (e) {
                     console.error('Error handling audio message:', e);
@@ -159,16 +163,32 @@ function handleConfigMessage(ws, clientData, config) {
     const roomSize = rooms.get(roomId).size;
     console.log(`Client ${clientData.id} joined room ${roomId} (Total Users: ${roomSize})`);
 
+    // Start Speech Service with Auto-Restart
+    startSpeechService(ws, clientData);
+
+    // (Old inline code removed)
+}
+
+function startSpeechService(ws, clientData) {
     if (clientData.speechService) {
-        clientData.speechService.close();
+        try { clientData.speechService.close(); } catch (e) { }
     }
 
-    // For Google Speech, we use the full language code (e.g., 'en-US')
+    console.log(`[${clientData.id}] Starting Google Speech Service...`);
     clientData.speechService = speechService.recognizeSpeech(
         clientData.config.sourceLang,
         (text) => handleRecognizedText(ws, text),
-        (text) => console.log(`[${clientData.id}] Recognizing: ${text}`)
+        (text) => console.log(`[${clientData.id}] Recognizing: ${text}`),
+        (error) => {
+            console.log(`[${clientData.id}] Speech Error: ${error.message}. Restarting...`);
+            // Check if socket is still open before restarting
+            if (ws.readyState === WebSocket.OPEN) {
+                // Add small delay to prevent rapid loops
+                setTimeout(() => startSpeechService(ws, clientData), 1000);
+            }
+        }
     );
+}
 }
 
 async function handleRecognizedText(ws, text) {

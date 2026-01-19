@@ -11,9 +11,10 @@ const client = new speech.SpeechClient({
  * @param {string} languageCode - The language code (e.g., 'en-US').
  * @param {Function} onTextRecognized - Callback when final text is recognized.
  * @param {Function} onInterimText - Callback for interim results (optional).
+ * @param {Function} onError - Callback for stream errors (optional).
  * @returns {Object} - An object containing the writable stream and a close function.
  */
-function recognizeSpeech(languageCode, onTextRecognized, onInterimText) {
+function recognizeSpeech(languageCode, onTextRecognized, onInterimText, onError) {
     const request = {
         config: {
             encoding: 'LINEAR16',
@@ -25,31 +26,41 @@ function recognizeSpeech(languageCode, onTextRecognized, onInterimText) {
     };
 
     // Create the recognition stream
-    const recognizeStream = client
-        .streamingRecognize(request)
-        .on('error', (error) => {
-            console.error(`(GoogleSpeech) Error: ${error.message}`);
-        })
-        .on('data', (data) => {
-            if (data.results[0] && data.results[0].alternatives[0]) {
-                const result = data.results[0];
-                const transcript = result.alternatives[0].transcript;
+    let recognizeStream;
+    try {
+        recognizeStream = client
+            .streamingRecognize(request)
+            .on('error', (error) => {
+                console.error(`(GoogleSpeech) Error: ${error.message}`);
+                if (onError) onError(error);
+            })
+            .on('data', (data) => {
+                if (data.results[0] && data.results[0].alternatives[0]) {
+                    const result = data.results[0];
+                    const transcript = result.alternatives[0].transcript;
 
-                if (result.isFinal) {
-                    onTextRecognized(transcript);
-                } else {
-                    if (onInterimText) {
-                        onInterimText(transcript);
+                    if (result.isFinal) {
+                        onTextRecognized(transcript);
+                    } else {
+                        if (onInterimText) {
+                            onInterimText(transcript);
+                        }
                     }
                 }
-            }
-        });
+            });
+    } catch (e) {
+        console.error('(GoogleSpeech) Init Error:', e);
+        if (onError) onError(e);
+        return { write: () => { }, close: () => { } };
+    }
 
     // Create a Transform stream to accept incoming audio chunks
     // This allows us to pipe or write to it directly
     const pushStream = new Transform({
         transform(chunk, encoding, callback) {
-            recognizeStream.write(chunk);
+            if (recognizeStream && !recognizeStream.destroyed) {
+                recognizeStream.write(chunk);
+            }
             callback();
         }
     });
@@ -57,7 +68,9 @@ function recognizeSpeech(languageCode, onTextRecognized, onInterimText) {
     return {
         write: (buffer) => {
             // Write to the wrapper stream which writes to Google stream
-            pushStream.write(buffer);
+            if (pushStream && !pushStream.destroyed) {
+                pushStream.write(buffer);
+            }
         },
         close: () => {
             console.log('(GoogleSpeech) Closing recognition stream');
