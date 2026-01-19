@@ -76,6 +76,8 @@ wss.on('connection', (ws, req) => {
                 const msg = JSON.parse(message.toString());
                 if (msg.type === 'config') {
                     handleConfigMessage(ws, clientData, msg);
+                } else if (msg.type === 'chat') {
+                    handleChatMessage(ws, clientData, msg.text);
                 }
             } catch (e) {
                 console.error('Error parsing JSON message:', e);
@@ -177,51 +179,73 @@ async function handleRecognizedText(ws, text) {
     console.log(`[${clientData.id}] Recognized: ${text}`);
 
     try {
-        // Use BASE language codes for translation API
+        // 1. Translate Code (Uses Google)
         const translatedText = await translationService.translateText(
             text,
-            clientData.config.sourceLangBase,  // Use "te" not "te-IN"
-            clientData.config.targetLangBase   // Use "en" not "en-US"
+            clientData.config.sourceLangBase,
+            clientData.config.targetLangBase
         );
         console.log(`[${clientData.id}] Translated: ${translatedText}`);
 
         if (!translatedText) return;
 
-        // Send transcript to the speaking user (original text + their own translation)
+        // 2. IMMEDIATE TEXT BROADCAST (Parallel Optimization)
+        // Send text to everyone (including Speaker) RIGHT NOW.
+        // Don't wait for Audio/TTS.
+        const textMessage = JSON.stringify({
+            type: 'transcript',
+            original: text,
+            translated: translatedText,
+            isLocal: false, // Will be overridden by client logic if needed, or handled below
+            timestamp: new Date().toISOString()
+        });
+
+        // Send to Speaker (Local)
         if (ws.readyState === WebSocket.OPEN) {
-            const transcriptData = JSON.stringify({
+            ws.send(JSON.stringify({
                 type: 'transcript',
                 original: text,
                 translated: translatedText,
                 isLocal: true,
                 timestamp: new Date().toISOString()
-            });
-            ws.send(transcriptData);
-            console.log(`[${clientData.id}] Sent transcript to speaker`);
+            }));
         }
 
+        // Send to Room (Others)
+        const room = rooms.get(clientData.roomId);
+        if (room) {
+            room.forEach(client => {
+                if (client !== ws && client.readyState === WebSocket.OPEN) {
+                    // Mark as remote for others
+                    client.send(JSON.stringify({
+                        type: 'transcript',
+                        original: text,
+                        translated: translatedText,
+                        isLocal: false,
+                        timestamp: new Date().toISOString()
+                    }));
+                }
+            });
+        }
+
+        // 3. GENERATE AUDIO (Background Task)
+        // Start TTS immediately after sending text
         const { synthesizeSpeech } = require('./googleTtsService');
 
-        // ... (inside handleRecognizedText) ...
-
+        // This runs "in parallel" with the network sending the text above
         const audioBuffer = await synthesizeSpeech(
             translatedText,
-            clientData.config.targetLang,  // Use full code for TTS (en-US)
+            clientData.config.targetLang,
             clientData.config.voiceName
         );
         console.log(`[${clientData.id}] Synthesized WAV audio (Google TTS) size: ${audioBuffer.byteLength}`);
 
-        // Broadcast audio and transcript to OTHER users in the room
-        const room = rooms.get(clientData.roomId);
+        // 4. BROADCAST AUDIO
         if (room) {
-            // Calculate how long the TTS audio will play
             const playbackDurationMs = calculatePlaybackDurationMs(audioBuffer);
-            // Verify room state
-            console.log(`[${clientData.id}] TTS generated successfully. Size: ${audioBuffer.byteLength} bytes. Duration: ${playbackDurationMs.toFixed(0)}ms. Room Size: ${room.size}`);
 
-            // DEBUG: Echo back to speaker if they are alone (for testing)
-            if (room.size === 1) {
-                console.log(`[${clientData.id}] TEST MODE: Echoing TTS back to speaker because room is empty.`);
+            // Echo for single-user testing
+            if (room.size === 1 && ws.readyState === WebSocket.OPEN) {
                 ws.send(audioBuffer);
             }
 
@@ -229,45 +253,62 @@ async function handleRecognizedText(ws, text) {
                 if (client !== ws && client.readyState === WebSocket.OPEN) {
                     const recipientData = clients.get(client);
 
-                    // HALF-DUPLEX: Set speaking flag for recipient
-                    // This will gate their microphone audio during TTS playback
+                    // Handle Half-Duplex Gating
                     if (recipientData) {
-                        // Clear any existing timeout
-                        if (recipientData.speakingTimeout) {
-                            clearTimeout(recipientData.speakingTimeout);
-                        }
-
-                        // Gate mic audio for this recipient
+                        if (recipientData.speakingTimeout) clearTimeout(recipientData.speakingTimeout);
                         recipientData.isSpeaking = true;
-                        console.log(`[${recipientData.id}] HALF-DUPLEX: Gating mic for ${playbackDurationMs.toFixed(0)}ms`);
-
-                        // Resume mic after playback completes
                         recipientData.speakingTimeout = setTimeout(() => {
                             recipientData.isSpeaking = false;
                             recipientData.speakingTimeout = null;
-                            console.log(`[${recipientData.id}] HALF-DUPLEX: Mic resumed`);
                         }, playbackDurationMs);
                     }
 
-                    // Send audio
+                    // Send Audio
                     client.send(audioBuffer);
-
-                    // Send transcript text
-                    const transcriptData = JSON.stringify({
-                        type: 'transcript',
-                        original: text,
-                        translated: translatedText,
-                        isLocal: false,
-                        timestamp: new Date().toISOString()
-                    });
-                    client.send(transcriptData);
                 }
             });
-            console.log(`[${clientData.id}] Broadcast to ${room.size - 1} other users`);
+            console.log(`[${clientData.id}] Broadcast AUDIO to room`);
         }
 
     } catch (error) {
         console.error('Error in processing pipeline:', error);
+    }
+}
+
+async function handleChatMessage(ws, clientData, text) {
+    if (!text) return;
+    if (!clientData.roomId) return;
+
+    console.log(`[${clientData.id}] Chat Message: ${text}`);
+
+    try {
+        // Translate the text
+        const translatedText = await translationService.translateText(
+            text,
+            clientData.config.sourceLangBase,
+            clientData.config.targetLangBase
+        );
+        console.log(`[${clientData.id}] Chat Translated: ${translatedText}`);
+
+        const messageData = JSON.stringify({
+            type: 'chat',
+            senderId: clientData.id,
+            original: text,
+            translated: translatedText,
+            timestamp: new Date().toISOString()
+        });
+
+        // Broadcast to room
+        const room = rooms.get(clientData.roomId);
+        if (room) {
+            room.forEach(client => {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.send(messageData);
+                }
+            });
+        }
+    } catch (error) {
+        console.error('Error handling chat message:', error);
     }
 }
 
