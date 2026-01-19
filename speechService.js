@@ -1,98 +1,74 @@
-const sdk = require('microsoft-cognitiveservices-speech-sdk');
-require('dotenv').config();
+const speech = require('@google-cloud/speech');
+const { Transform } = require('stream');
 
-function recognizeSpeech(sourceLang, onRecognized, onRecognizing) {
-    if (!process.env.AZURE_SPEECH_KEY || !process.env.AZURE_SPEECH_REGION) {
-        console.error('AZURE_SPEECH_KEY or AZURE_SPEECH_REGION not set!');
-        return { pushStream: null, close: () => { } };
-    }
+// Initialize Google Speech Client
+const client = new speech.SpeechClient({
+    keyFilename: './google-credentials.json' // Generated at runtime by googleConfig.js
+});
 
-    const speechConfig = sdk.SpeechConfig.fromSubscription(
-        process.env.AZURE_SPEECH_KEY,
-        process.env.AZURE_SPEECH_REGION
-    );
-
-    speechConfig.speechRecognitionLanguage = sourceLang;
-
-    // Create a PushAudioInputStream to push audio data from WebSocket
-    const pushStream = sdk.AudioInputStream.createPushStream();
-
-    // Create AudioConfig from the push stream
-    const audioConfig = sdk.AudioConfig.fromStreamInput(pushStream);
-
-    // Create the SpeechRecognizer
-    const recognizer = new sdk.SpeechRecognizer(speechConfig, audioConfig);
-
-    console.log(`(AzureSpeech) Initializing recognition for: ${sourceLang}`);
-
-    recognizer.recognizing = (s, e) => {
-        if (e.result.text) {
-            console.log(`(AzureSpeech) Recognizing: ${e.result.text}`);
-            if (onRecognizing) onRecognizing(e.result.text);
-        }
+/**
+ * Recognizes speech from an audio stream using Google Cloud Speech-to-Text.
+ * @param {string} languageCode - The language code (e.g., 'en-US').
+ * @param {Function} onTextRecognized - Callback when final text is recognized.
+ * @param {Function} onInterimText - Callback for interim results (optional).
+ * @returns {Object} - An object containing the writable stream and a close function.
+ */
+function recognizeSpeech(languageCode, onTextRecognized, onInterimText) {
+    const request = {
+        config: {
+            encoding: 'LINEAR16',
+            sampleRateHertz: 16000,
+            languageCode: languageCode,
+            enableAutomaticPunctuation: true,
+        },
+        interimResults: true, // Get partial results
     };
 
-    recognizer.recognized = (s, e) => {
-        if (e.result.reason === sdk.ResultReason.RecognizedSpeech) {
-            console.log(`(AzureSpeech) Recognized: ${e.result.text}`);
-            if (onRecognized) onRecognized(e.result.text);
-        } else if (e.result.reason === sdk.ResultReason.NoMatch) {
-            console.log('(AzureSpeech) NOMATCH: Speech could not be recognized.');
-        }
-    };
+    // Create the recognition stream
+    const recognizeStream = client
+        .streamingRecognize(request)
+        .on('error', (error) => {
+            console.error(`(GoogleSpeech) Error: ${error.message}`);
+        })
+        .on('data', (data) => {
+            if (data.results[0] && data.results[0].alternatives[0]) {
+                const result = data.results[0];
+                const transcript = result.alternatives[0].transcript;
 
-    recognizer.canceled = (s, e) => {
-        console.log(`(AzureSpeech) CANCELED: Reason=${e.reason}`);
-        if (e.reason === sdk.CancellationReason.Error) {
-            console.log(`(AzureSpeech) ErrorDetails=${e.errorDetails}`);
-        }
-        recognizer.stopContinuousRecognitionAsync();
-    };
-
-    recognizer.sessionStopped = (s, e) => {
-        console.log('(AzureSpeech) Session stopped.');
-        recognizer.stopContinuousRecognitionAsync();
-    };
-
-    // Start recognition
-    recognizer.startContinuousRecognitionAsync();
-
-    // Create a wrapper to match the interface expected by server.js
-    return {
-        // server.js calls pushStream.write(buffer)
-        pushStream: {
-            write: (buffer) => {
-                try {
-                    pushStream.write(buffer);
-                } catch (err) {
-                    console.error('(AzureSpeech) Error writing to push stream:', err);
+                if (result.isFinal) {
+                    onTextRecognized(transcript);
+                } else {
+                    if (onInterimText) {
+                        onInterimText(transcript);
+                    }
                 }
-            },
-            close: () => {
-                try {
-                    pushStream.close();
-                } catch (err) {
-                    console.error('(AzureSpeech) Error closing push stream:', err);
-                }
-            },
-            destroy: () => {
-                try {
-                    pushStream.close();
-                } catch (err) { }
             }
+        });
+
+    // Create a Transform stream to accept incoming audio chunks
+    // This allows us to pipe or write to it directly
+    const pushStream = new Transform({
+        transform(chunk, encoding, callback) {
+            recognizeStream.write(chunk);
+            callback();
+        }
+    });
+
+    return {
+        write: (buffer) => {
+            // Write to the wrapper stream which writes to Google stream
+            pushStream.write(buffer);
         },
         close: () => {
-            console.log('(AzureSpeech) Closing recognizer.');
-            try {
-                recognizer.stopContinuousRecognitionAsync(() => {
-                    recognizer.close();
-                    pushStream.close();
-                });
-            } catch (e) {
-                console.error('(AzureSpeech) Error closing:', e);
-            }
+            recognizer.stopContinuousRecognitionAsync(() => {
+                recognizer.close();
+                pushStream.close();
+            });
+        } catch(e) {
+            console.error('(AzureSpeech) Error closing:', e);
         }
-    };
+    }
+};
 }
 
 module.exports = { recognizeSpeech };

@@ -5,6 +5,13 @@ const { mapLanguageCode, getVoiceNameForLang } = require('./languageMapper');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
+// Initialize Google Credentials for Render
+try {
+    require('./googleConfig').setupGoogleCredentials();
+} catch (err) {
+    console.error('Failed to setup Google Credentials:', err);
+}
+
 const PORT = process.env.PORT || 8080;
 const wss = new WebSocket.Server({ port: PORT });
 
@@ -173,6 +180,7 @@ function handleConfigMessage(ws, clientData, config) {
         clientData.speechService.close();
     }
 
+    // For Google Speech, we use the full language code (e.g., 'en-US')
     clientData.speechService = speechService.recognizeSpeech(
         clientData.config.sourceLang,
         (text) => handleRecognizedText(ws, text),
