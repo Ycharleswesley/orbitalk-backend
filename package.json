@@ -19,6 +19,7 @@
   "dependencies": {
     "@google-cloud/speech": "^7.2.1",
     "@google-cloud/text-to-speech": "^6.4.0",
+    "@google-cloud/translate": "^9.3.0",
     "axios": "^1.6.0",
     "dotenv": "^17.2.3",
     "microsoft-cognitiveservices-speech-sdk": "^1.34.0",
