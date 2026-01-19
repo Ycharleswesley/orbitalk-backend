@@ -189,7 +189,7 @@ function startSpeechService(ws, clientData) {
         }
     );
 }
-}
+
 
 async function handleRecognizedText(ws, text) {
     if (!text) return;
