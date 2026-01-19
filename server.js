@@ -93,12 +93,25 @@ wss.on('connection', (ws, req) => {
 
             if (clientData.speechService) {
                 try {
-                    // Debug: Log incoming audio to verify stream
+                    // Debug: Check for silence (all zeros)
+                    // Sample first 100 bytes for efficiency
+                    let isSilence = true;
+                    for (let i = 0; i < Math.min(message.length, 100); i++) {
+                        if (message[i] !== 0) {
+                            isSilence = false;
+                            break;
+                        }
+                    }
+
                     if (clientData.isSpeaking) {
-                        // console.log(`[${clientData.id}] Audio GATED (TTS playing)`);
                         return;
                     } else {
-                        console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes`);
+                        if (isSilence) {
+                            console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes (SILENCE detected - may cause timeout)`);
+                        } else {
+                            // Reduce log spam, only log every 10th packet or if verbose
+                            // console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes`);
+                        }
                     }
 
                     // Write to speech service
