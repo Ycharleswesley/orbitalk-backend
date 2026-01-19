@@ -89,43 +89,24 @@ wss.on('connection', (ws, req) => {
                 return;
             }
 
-            if (clientData.speechService && clientData.speechService.pushStream) {
+            if (clientData.speechService) {
                 try {
-                    // Debug: Check for silence (all zeros)
-                    const firstBytes = message.slice(0, 5);
-                    const isSilence = message.every(byte => byte === 0);
-
                     // Debug: Log incoming audio to verify stream
                     if (clientData.isSpeaking) {
-                        console.log(`[${clientData.id}] Audio GATED (TTS playing)`);
+                        // console.log(`[${clientData.id}] Audio GATED (TTS playing)`);
+                        return;
                     } else {
                         console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes`);
                     }
 
-                    // Auto-Restart Logic
-                    if (!clientData.speechService || !clientData.speechService.pushStream || clientData.speechService.pushStream.destroyed) {
-                        console.log(`[${clientData.id}] Speech stream dead/destroyed. RESTARTING...`);
-                        if (clientData.speechService) {
-                            try { clientData.speechService.close(); } catch (e) { }
-                        }
-                        if (clientData.config) {
-                            clientData.speechService = speechService.recognizeSpeech(
-                                clientData.config.sourceLang,
-                                (text) => handleRecognizedText(ws, text),
-                                (text) => console.log(`[${clientData.id}] Recognizing: ${text}`)
-                            );
-                        }
-                    }
-
+                    // Write to speech service
                     try {
-                        if (clientData.speechService && clientData.speechService.pushStream && !clientData.speechService.pushStream.destroyed) {
-                            clientData.speechService.pushStream.write(message);
-                        }
+                        clientData.speechService.write(message);
                     } catch (e) {
                         console.log(`[${clientData.id}] Stream write error:`, e.message);
                     }
                 } catch (e) {
-                    console.error('Error writing to push stream:', e);
+                    console.error('Error handling audio message:', e);
                 }
             }
         }
