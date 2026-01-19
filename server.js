@@ -58,6 +58,12 @@ wss.on('connection', (ws, req) => {
     console.log(`New client connected from IP: ${remoteIp}`);
     const clientId = uuidv4();
 
+    // Send Connection Acknowledgement
+    ws.send(JSON.stringify({
+        type: 'connection_ack',
+        clientId: clientId
+    }));
+
     clients.set(ws, {
         id: clientId,
         roomId: null,
