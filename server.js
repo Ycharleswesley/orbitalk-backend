@@ -175,8 +175,8 @@ function handleConfigMessage(ws, clientData, config) {
     const roomSize = rooms.get(roomId).size;
     console.log(`Client ${clientData.id} joined room ${roomId} (Total Users: ${roomSize})`);
 
-    // Notify room of new user count
-    broadcastRoomUpdate(roomId);
+    // Notify room of new user count (Small delay to ensure connection stability)
+    setTimeout(() => broadcastRoomUpdate(roomId), 500);
 
     // Start Speech Service with Auto-Restart
     startSpeechService(ws, clientData);
