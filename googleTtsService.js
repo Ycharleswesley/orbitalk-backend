@@ -33,6 +33,11 @@ async function synthesizeSpeech(text, languageCode, voiceName) {
 
     try {
         const [response] = await client.synthesizeSpeech(request);
+        // Google LINEAR16 returns a WAV file (with 44-byte header).
+        // Flutter sound_stream expects RAW PCM. We must strip the header.
+        if (response.audioContent && response.audioContent.length > 44) {
+            return response.audioContent.slice(44);
+        }
         return response.audioContent;
     } catch (error) {
         console.error('(GoogleTTS) Synthesis Error:', error);
