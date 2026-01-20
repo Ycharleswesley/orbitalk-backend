@@ -94,6 +94,9 @@ wss.on('connection', (ws, req) => {
 
             if (clientData.speechService) {
                 try {
+                    // Update timestamp for Silence Injector
+                    clientData.lastAudioTime = Date.now();
+
                     // Debug: Check for silence (all zeros)
                     // Sample first 100 bytes for efficiency
                     let isSilence = true;
@@ -210,6 +213,8 @@ function startSpeechService(ws, clientData) {
         (text) => console.log(`[${clientData.id}] Recognizing: ${text}`),
         (error) => {
             console.log(`[${clientData.id}] Speech Error: ${error.message}. Restarting...`);
+            if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
+
             // Check if socket is still open before restarting
             if (ws.readyState === WebSocket.OPEN) {
                 // Add small delay to prevent rapid loops
@@ -217,6 +222,28 @@ function startSpeechService(ws, clientData) {
             }
         }
     );
+
+    // KEEPALIVE: Inject silence if no audio received for 2 seconds
+    // This prevents Google STT from timing out due to "Long duration elapsed without audio"
+    if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
+
+    clientData.lastAudioTime = Date.now();
+    clientData.silenceInterval = setInterval(() => {
+        if (!clientData.speechService) return;
+
+        const now = Date.now();
+        if (now - clientData.lastAudioTime > 2000) {
+            // Inject 100ms of silence
+            try {
+                // 16000Hz * 2 bytes * 0.1s = 3200 bytes
+                const silence = Buffer.alloc(3200, 0);
+                clientData.speechService.write(silence);
+                // console.log(`[${clientData.id}] Injected SILENCE to keep stream alive`);
+            } catch (e) {
+                // Ignore write errors, stream might be closed
+            }
+        }
+    }, 2000);
 }
 
 
@@ -368,6 +395,11 @@ function cleanupClient(ws) {
         if (clientData.speakingTimeout) {
             clearTimeout(clientData.speakingTimeout);
             clientData.speakingTimeout = null;
+        }
+
+        if (clientData.silenceInterval) {
+            clearInterval(clientData.silenceInterval);
+            clientData.silenceInterval = null;
         }
 
         if (clientData.speechService) {
