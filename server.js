@@ -210,7 +210,13 @@ function startSpeechService(ws, clientData) {
     clientData.speechService = speechService.recognizeSpeech(
         clientData.config.sourceLang,
         (text) => handleRecognizedText(ws, text),
-        (text) => console.log(`[${clientData.id}] Recognizing: ${text}`),
+        (text) => {
+            // console.log(`[${clientData.id}] Recognizing: ${text}`);
+            if (clientData) {
+                clientData.lastInterimTime = Date.now();
+                clientData.hasPendingInterim = true;
+            }
+        },
         (error) => {
             console.log(`[${clientData.id}] Speech Error: ${error.message}. Restarting...`);
             if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
@@ -251,6 +257,9 @@ async function handleRecognizedText(ws, text) {
     if (!text) return;
     const clientData = clients.get(ws);
     if (!clientData || !clientData.roomId) return;
+
+    // Reset pending flag as we got a final result
+    clientData.hasPendingInterim = false;
 
     console.log(`[${clientData.id}] Recognized: ${text}`);
 

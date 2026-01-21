@@ -37,6 +37,10 @@ function recognizeSpeech(languageCode, onTextRecognized, onInterimText, onError)
                 console.error(`(GoogleSpeech) Error: ${error.message}`);
                 if (onError) onError(error);
             })
+            // Pass the 'end' event to the error handler to trigger restart in server.js
+            .on('end', () => {
+                if (onError) onError(new Error('Stream ended normally'));
+            })
             .on('data', (data) => {
                 if (data.results[0] && data.results[0].alternatives[0]) {
                     const result = data.results[0];
