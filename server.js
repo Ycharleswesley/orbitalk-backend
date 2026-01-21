@@ -260,9 +260,11 @@ function startSpeechService(ws, clientData) {
         if (clientData.hasPendingInterim && interimStableDuration > 2000) {
             console.log(`[${clientData.id}] Force Finalizing (2s Silence)...`);
 
-            // Mark as intentional so error handler doesn't log it as a crash
-            clientData.intentionalClose = true;
-            clientData.speechService.end();
+            if (clientData.speechService && typeof clientData.speechService.end === 'function') {
+                // Mark as intentional so error handler doesn't log it as a crash
+                clientData.intentionalClose = true;
+                clientData.speechService.end();
+            }
 
             // Restart immediately (seamlessly)
             startSpeechService(ws, clientData);

@@ -55,6 +55,8 @@ function recognizeSpeech(languageCode, onTextRecognized, onInterimText, onError)
                     }
                 }
             });
+
+        return recognizeStream;
     } catch (e) {
         console.error('(GoogleSpeech) Init Error:', e);
         if (onError) onError(e);
