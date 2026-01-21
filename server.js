@@ -304,37 +304,43 @@ async function handleRecognizedText(ws, text) {
             });
         }
 
-        // 3. GENERATE AUDIO (Background Task)
-        // Start TTS immediately after sending text
+        // 3. GENERATE AUDIO (Smart Chunking / Simulated Streaming)
+        // Split text into sentences to send audio asap
+        const sentences = translatedText.match(/[^.?!]+[.?!]+[\]'"”’)}]*|.+/g) || [translatedText];
         const { synthesizeSpeech } = require('./googleTtsService');
 
-        // This runs "in parallel" with the network sending the text above
-        const audioBuffer = await synthesizeSpeech(
-            translatedText,
-            clientData.config.targetLang,
-            clientData.config.voiceName
-        );
-        console.log(`[${clientData.id}] Synthesized WAV audio (Google TTS) size: ${audioBuffer.byteLength}`);
+        console.log(`[${clientData.id}] Processing ${sentences.length} chunks for: "${translatedText}"`);
 
-        // 4. BROADCAST AUDIO
-        if (room) {
-            const playbackDurationMs = calculatePlaybackDurationMs(audioBuffer);
+        // Process sentences sequentially to maintain order, but send ASAP
+        for (const sentence of sentences) {
+            if (!sentence.trim()) continue;
 
-            // Echo for single-user testing
-            if (room.size === 1 && ws.readyState === WebSocket.OPEN) {
-                ws.send(audioBuffer);
-            }
+            // console.log(`[${clientData.id}] Generating chunk: "${sentence.substring(0, 20)}..."`);
 
-            room.forEach(client => {
-                if (client !== ws && client.readyState === WebSocket.OPEN) {
-                    const recipientData = clients.get(client);
+            const audioBuffer = await synthesizeSpeech(
+                sentence.trim(),
+                clientData.config.targetLang,
+                clientData.config.voiceName
+            );
 
-                    // Send Audio
-                    client.send(audioBuffer);
+            if (audioBuffer && audioBuffer.length > 0) {
+                // 4. BROADCAST AUDIO CHUNK
+                if (room) {
+                    // Echo for single-user testing
+                    if (room.size === 1 && ws.readyState === WebSocket.OPEN) {
+                        ws.send(audioBuffer);
+                    }
+
+                    room.forEach(client => {
+                        if (client !== ws && client.readyState === WebSocket.OPEN) {
+                            // Send Audio Chunk
+                            client.send(audioBuffer);
+                        }
+                    });
                 }
-            });
-            console.log(`[${clientData.id}] Broadcast AUDIO to room`);
+            }
         }
+        console.log(`[${clientData.id}] Finished broadcasting all audio chunks.`);
 
     } catch (error) {
         console.error('Error in processing pipeline:', error);
