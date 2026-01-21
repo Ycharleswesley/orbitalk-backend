@@ -304,47 +304,57 @@ async function handleRecognizedText(ws, text) {
             });
         }
 
-        // 3. GENERATE AUDIO (Background Task)
-        // Start TTS immediately after sending text
-        const { synthesizeSpeech } = require('./googleTtsService');
+        // 3. GENERATE AUDIO (Streaming)
+        // Start TTS Stream immediately
+        const { streamSpeech } = require('./googleTtsService');
 
-        // This runs "in parallel" with the network sending the text above
-        const audioBuffer = await synthesizeSpeech(
+        console.log(`[${clientData.id}] Streaming TTS for: "${translatedText}"`);
+
+        const ttsStream = streamSpeech(
             translatedText,
             clientData.config.targetLang,
             clientData.config.voiceName
         );
-        console.log(`[${clientData.id}] Synthesized WAV audio (Google TTS) size: ${audioBuffer.byteLength}`);
 
-        // 4. BROADCAST AUDIO
-        if (room) {
-            const playbackDurationMs = calculatePlaybackDurationMs(audioBuffer);
+        let isFirstChunk = true;
 
-            // Echo for single-user testing
-            if (room.size === 1 && ws.readyState === WebSocket.OPEN) {
-                ws.send(audioBuffer);
-            }
+        ttsStream.on('data', (response) => {
+            if (response.audioContent) {
+                let audioChunk = response.audioContent;
 
-            room.forEach(client => {
-                if (client !== ws && client.readyState === WebSocket.OPEN) {
-                    const recipientData = clients.get(client);
-
-                    // Handle Half-Duplex Gating
-                    if (recipientData) {
-                        if (recipientData.speakingTimeout) clearTimeout(recipientData.speakingTimeout);
-                        recipientData.isSpeaking = true;
-                        recipientData.speakingTimeout = setTimeout(() => {
-                            recipientData.isSpeaking = false;
-                            recipientData.speakingTimeout = null;
-                        }, playbackDurationMs);
+                // STRIP WAV HEADER (44 bytes) from the FIRST chunk only
+                if (isFirstChunk) {
+                    if (audioChunk.length > 44) {
+                        audioChunk = audioChunk.slice(44);
+                        isFirstChunk = false;
+                    } else {
+                        // Chunk too small, skip (very rare)
+                        return;
                     }
-
-                    // Send Audio
-                    client.send(audioBuffer);
                 }
-            });
-            console.log(`[${clientData.id}] Broadcast AUDIO to room`);
-        }
+
+                if (audioChunk.length > 0 && room) {
+                    // BROADCAST CHUNK IMMEDIATELY
+                    room.forEach(client => {
+                        if (client !== ws && client.readyState === WebSocket.OPEN) {
+                            try {
+                                client.send(audioChunk);
+                            } catch (e) {
+                                console.error('Error sending audio chunk:', e);
+                            }
+                        }
+                    });
+                }
+            }
+        });
+
+        ttsStream.on('error', (err) => {
+            console.error(`[${clientData.id}] TTS Stream Error:`, err);
+        });
+
+        ttsStream.on('end', () => {
+            // console.log(`[${clientData.id}] TTS Stream Finished`);
+        });
 
     } catch (error) {
         console.error('Error in processing pipeline:', error);

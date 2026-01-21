@@ -45,4 +45,43 @@ async function synthesizeSpeech(text, languageCode, voiceName) {
     }
 }
 
-module.exports = { synthesizeSpeech };
+/**
+ * Streams synthesized speech from text using Google Cloud Text-to-Speech.
+ * @param {string} text - The text to synthesize.
+ * @param {string} languageCode - The language code.
+ * @param {string} voiceName - The specific voice name.
+ * @returns {object} - The writable stream to pipe text into (actually we write a config and input).
+ */
+function streamSpeech(text, languageCode, voiceName) {
+    // Note: Google's streamingSynthesize is actually a bidirectional stream, 
+    // but for simple TTS we just write the config + input once and read the output.
+
+    const stream = client.streamingSynthesize();
+
+    // 1. Send Config
+    stream.write({
+        streamingConfig: {
+            audioConfig: {
+                audioEncoding: 'LINEAR16',
+                sampleRateHertz: 16000,
+                effectsProfileId: ['telephony-class-application'],
+            },
+            voice: {
+                languageCode: languageCode,
+                name: voiceName,
+            },
+        },
+    });
+
+    // 2. Send Text Input
+    stream.write({
+        input: { text: text },
+    });
+
+    // 3. Close write end so Google knows we are done sending text
+    stream.end();
+
+    return stream;
+}
+
+module.exports = { synthesizeSpeech, streamSpeech };
