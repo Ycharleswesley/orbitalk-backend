@@ -205,18 +205,9 @@ function cleanupClient(ws) {
 
     if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
 
-    // Stop Speech Service safely
+    // Stop Speech Service
     if (clientData.speechService) {
-        try {
-            // Streams use .destroy() or .end(), not .close()
-            if (typeof clientData.speechService.destroy === 'function') {
-                clientData.speechService.destroy();
-            } else if (typeof clientData.speechService.end === 'function') {
-                clientData.speechService.end();
-            }
-        } catch (e) {
-            console.error('Error closing speech service:', e.message);
-        }
+        try { clientData.speechService.close(); } catch (e) { }
     }
 
     clients.delete(ws);
@@ -236,16 +227,7 @@ function cleanupClient(ws) {
 
 function startSpeechService(ws, clientData) {
     if (clientData.speechService) {
-        try {
-            // Streams use .destroy() or .end(), not .close()
-            if (typeof clientData.speechService.destroy === 'function') {
-                clientData.speechService.destroy();
-            } else if (typeof clientData.speechService.end === 'function') {
-                clientData.speechService.end();
-            }
-        } catch (e) {
-            console.error('Error stopping previous speech service:', e.message);
-        }
+        try { clientData.speechService.close(); } catch (e) { }
     }
 
     console.log(`[${clientData.id}] Starting Google Speech Service...`);
