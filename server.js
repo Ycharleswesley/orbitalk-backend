@@ -199,11 +199,53 @@ function broadcastRoomUpdate(roomId) {
     });
 }
 
+function cleanupClient(ws) {
+    const clientData = clients.get(ws);
+    if (!clientData) return;
 
+    if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
+
+    // Stop Speech Service safely
+    if (clientData.speechService) {
+        try {
+            // Streams use .destroy() or .end(), not .close()
+            if (typeof clientData.speechService.destroy === 'function') {
+                clientData.speechService.destroy();
+            } else if (typeof clientData.speechService.end === 'function') {
+                clientData.speechService.end();
+            }
+        } catch (e) {
+            console.error('Error closing speech service:', e.message);
+        }
+    }
+
+    clients.delete(ws);
+
+    // Remove client from room
+    if (clientData.roomId && rooms.has(clientData.roomId)) {
+        const room = rooms.get(clientData.roomId);
+        room.delete(ws);
+        if (room.size === 0) {
+            rooms.delete(clientData.roomId);
+            console.log(`Room ${clientData.roomId} is now empty and removed.`);
+        } else {
+            broadcastRoomUpdate(clientData.roomId);
+        }
+    }
+}
 
 function startSpeechService(ws, clientData) {
     if (clientData.speechService) {
-        try { clientData.speechService.close(); } catch (e) { }
+        try {
+            // Streams use .destroy() or .end(), not .close()
+            if (typeof clientData.speechService.destroy === 'function') {
+                clientData.speechService.destroy();
+            } else if (typeof clientData.speechService.end === 'function') {
+                clientData.speechService.end();
+            }
+        } catch (e) {
+            console.error('Error stopping previous speech service:', e.message);
+        }
     }
 
     console.log(`[${clientData.id}] Starting Google Speech Service...`);
