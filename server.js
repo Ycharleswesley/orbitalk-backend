@@ -218,6 +218,15 @@ function startSpeechService(ws, clientData) {
             }
         },
         (error) => {
+            // Ignore intentional closes or normal endings (handled by Force Finalize logic)
+            if (error.message === 'Stream ended normally') {
+                // Check if we should restart (e.g. client still connected)
+                if (ws.readyState === WebSocket.OPEN && !clientData.intentionalClose) {
+                    setTimeout(() => startSpeechService(ws, clientData), 1000);
+                }
+                return;
+            }
+
             console.log(`[${clientData.id}] Speech Error: ${error.message}. Restarting...`);
             if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
 
@@ -229,19 +238,43 @@ function startSpeechService(ws, clientData) {
         }
     );
 
+    // Reset intentionalClose flag
+    clientData.intentionalClose = false;
+
     // KEEPALIVE: Inject silence if no audio received for 2 seconds
     // This prevents Google STT from timing out due to "Long duration elapsed without audio"
     if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
 
     clientData.lastAudioTime = Date.now();
+    clientData.lastInterimTime = Date.now();
+    clientData.hasPendingInterim = false;
+
     clientData.silenceInterval = setInterval(() => {
         if (!clientData.speechService) return;
 
         const now = Date.now();
-        if (now - clientData.lastAudioTime > 2000) {
-            // Inject 100ms of silence
+        const silenceDuration = now - clientData.lastAudioTime;
+        const interimStableDuration = now - clientData.lastInterimTime;
+
+        // 1. FORCE FINALIZE (Re-connect) on 2s Silence if we have pending partial text
+        if (clientData.hasPendingInterim && interimStableDuration > 2000) {
+            console.log(`[${clientData.id}] Force Finalizing (2s Silence)...`);
+
+            // Mark as intentional so error handler doesn't log it as a crash
+            clientData.intentionalClose = true;
+            clientData.speechService.end();
+
+            // Restart immediately (seamlessly)
+            startSpeechService(ws, clientData);
+
+            clientData.hasPendingInterim = false;
+            return;
+        }
+
+        // 2. KEEPALIVE: Inject silence if no audio for 2s
+        if (silenceDuration > 2000) {
             try {
-                // 16000Hz * 2 bytes * 0.1s = 3200 bytes
+                // 3200 bytes = 100ms of silence
                 const silence = Buffer.alloc(3200, 0);
                 clientData.speechService.write(silence);
                 // console.log(`[${clientData.id}] Injected SILENCE to keep stream alive`);
@@ -249,7 +282,7 @@ function startSpeechService(ws, clientData) {
                 // Ignore write errors, stream might be closed
             }
         }
-    }, 2000);
+    }, 1000);
 }
 
 
