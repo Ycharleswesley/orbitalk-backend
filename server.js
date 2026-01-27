@@ -571,7 +571,14 @@ function cleanupClient(ws) {
         }
 
         if (clientData.speechService) {
-            clientData.speechService.close();
+            try {
+                if (clientData.speechService.destroy) {
+                    clientData.speechService.destroy();
+                } else if (clientData.speechService.end) {
+                    clientData.speechService.end();
+                }
+            } catch (e) { console.error('Error destroying speechService:', e); }
+            clientData.speechService = null;
         }
 
         if (clientData.roomId && rooms.has(clientData.roomId)) {
