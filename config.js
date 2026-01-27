@@ -4,13 +4,7 @@
 
 require('dotenv').config();
 
+// Google Credentials are handled by googleConfig.js and ENV
 module.exports = {
-    // Azure Speech Services
-    speechKey: process.env.SPEECH_KEY || '',
-    speechRegion: process.env.SPEECH_REGION || 'centralindia',
-
-    // Azure Translator
-    translatorKey: process.env.TRANSLATOR_KEY || '',
-    translatorRegion: process.env.TRANSLATOR_REGION || 'centralindia',
-    translatorEndpoint: 'https://api.cognitive.microsofttranslator.com'
+    // Empty - Config is handled by Google SDKs directly via ENV
 };

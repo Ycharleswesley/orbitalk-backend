@@ -1,9 +1,22 @@
 const WebSocket = require('ws');
-const speechService = require('./speechService');
+const http = require('http'); // Added for /translate endpoint
+// const speechService = require('./speechService'); // Lazy load instead to ensure credentials exist
 const translationService = require('./translationService');
 const { mapLanguageCode, getVoiceNameForLang } = require('./languageMapper');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
+const { Buffer } = require('buffer');
+const googleTtsService = require('./googleTtsService');
+
+// GLOBAL ERROR HANDLERS
+process.on('uncaughtException', (err) => {
+    console.error('UNCAUGHT EXCEPTION:', err);
+    // Keep process alive to prevent "Exited with status 1"
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('UNHANDLED REJECTION:', reason);
+});
 
 // Initialize Google Credentials for Render
 try {
@@ -13,7 +26,57 @@ try {
 }
 
 const PORT = process.env.PORT || 8080;
-const wss = new WebSocket.Server({ port: PORT });
+
+// Create HTTP Server for REST API + WebSocket
+const server = http.createServer(async (req, res) => {
+    // Enable CORS for frontend accessibility
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+    }
+
+    if (req.method === 'POST' && req.url === '/translate') {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const { text, targetLang, sourceLang } = JSON.parse(body);
+                if (!text || !targetLang) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Missing text or targetLang' }));
+                    return;
+                }
+
+                console.log(`(API) Translating: "${text}" -> ${targetLang}`);
+                const translatedText = await translationService.translateText(text, sourceLang || 'auto', targetLang);
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ translation: translatedText }));
+            } catch (e) {
+                console.error('(API) Translation Error:', e);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Translation Failed' }));
+            }
+        });
+        return;
+    }
+
+    // Default response
+    res.writeHead(404);
+    res.end();
+});
+
+// Attach WebSocket to HTTP Server
+const wss = new WebSocket.Server({ server });
+
+server.listen(PORT, () => {
+    console.log(`Server started on port ${PORT} (HTTP + WebSocket)`);
+});
 
 // Store client state
 const clients = new Map();
@@ -92,6 +155,15 @@ wss.on('connection', (ws, req) => {
             // HALF-DUPLEX REMOVED: Allow Full Duplex (Simultaneous Talk & Listen)
             // if (clientData.isSpeaking) { return; }
 
+            // Start/Restart Speech Service if not active (e.g. after timeout)
+            if (!clientData.speechService) {
+                // If we have config, we can restart
+                if (clientData.config) {
+                    // console.log(`[${clientData.id}] Audio received but service inactive. Restarting...`);
+                    startSpeechService(ws, clientData);
+                }
+            }
+
             if (clientData.speechService) {
                 try {
                     // Update timestamp for Silence Injector
@@ -144,7 +216,7 @@ wss.on('connection', (ws, req) => {
 function handleConfigMessage(ws, clientData, config) {
     console.log(`Received config for client ${clientData.id}:`, config);
 
-    // Map language codes to Azure-compatible formats
+    // Map language codes to Google-compatible formats
     // For Speech Recognition: use full code (te-IN)
     // For Translation API: use base code only (te)
     const sourceLangFull = mapLanguageCode(config.sourceLang || 'en');
@@ -207,7 +279,10 @@ function cleanupClient(ws) {
 
     // Stop Speech Service
     if (clientData.speechService) {
-        try { clientData.speechService.close(); } catch (e) { }
+        try {
+            if (clientData.speechService.destroy) clientData.speechService.destroy();
+            else if (clientData.speechService.end) clientData.speechService.end();
+        } catch (e) { }
     }
 
     clients.delete(ws);
@@ -227,10 +302,14 @@ function cleanupClient(ws) {
 
 function startSpeechService(ws, clientData) {
     if (clientData.speechService) {
-        try { clientData.speechService.close(); } catch (e) { }
+        try {
+            if (clientData.speechService.destroy) clientData.speechService.destroy();
+            else if (clientData.speechService.end) clientData.speechService.end();
+        } catch (e) { }
     }
 
     console.log(`[${clientData.id}] Starting Google Speech Service...`);
+    const speechService = require('./speechService'); // Lazy load AFTER credentials are generated
     clientData.speechService = speechService.recognizeSpeech(
         clientData.config.sourceLang,
         (text) => handleRecognizedText(ws, text),
@@ -251,6 +330,24 @@ function startSpeechService(ws, clientData) {
                 return;
             }
 
+            // FILTER: Ignore "Audio Timeout Error" (Long duration without audio)
+            // This happens when the user stops talking for > 10-20 seconds.
+            // We should NOT restart immediately, otherwise we get a loop.
+            // PROPER FIX: Just let it die. The next time the user speaks, we can recreate it? 
+            // OR: Just Swallow the error and don't restart? 
+            // The stream is dead on error. If we don't restart, we have no listener.
+            // BUT, if we restart immediately, we get the same error if no audio is coming.
+
+            // Current strategy: Restart, but with a longer backoff (e.g. 5 seconds) OR don't restart if silence duration is high?
+
+            // BETTER STRATEGY: Treat "Audio Timeout" as a "Silence Close".
+            if (error.message && /audio timeout/i.test(error.message)) {
+                console.log(`[${clientData.id}] Audio Timeout (Silence). Stream closed. Will restart on next audio packet.`);
+                if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
+                clientData.speechService = null;
+                return;
+            }
+
             console.log(`[${clientData.id}] Speech Error: ${error.message}. Restarting...`);
             if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
 
@@ -261,6 +358,13 @@ function startSpeechService(ws, clientData) {
             }
         }
     );
+
+    // WARM UP: Send 10ms of silence immediately to force connection open
+    try {
+        if (clientData.speechService && clientData.speechService.write) {
+            clientData.speechService.write(Buffer.alloc(320, 0));
+        }
+    } catch (e) { }
 
     // Reset intentionalClose flag
     clientData.intentionalClose = false;
@@ -280,8 +384,8 @@ function startSpeechService(ws, clientData) {
         const silenceDuration = now - clientData.lastAudioTime;
         const interimStableDuration = now - clientData.lastInterimTime;
 
-        // 1. FORCE FINALIZE (Re-connect) on 2s Silence if we have pending partial text
-        if (clientData.hasPendingInterim && interimStableDuration > 2000) {
+        // 1. FORCE FINALIZE (Re-connect) on 800ms Silence if we have pending partial text
+        if (clientData.hasPendingInterim && interimStableDuration > 800) {
             console.log(`[${clientData.id}] Force Finalizing (2s Silence)...`);
 
             if (clientData.speechService && typeof clientData.speechService.end === 'function') {
@@ -297,7 +401,7 @@ function startSpeechService(ws, clientData) {
             return;
         }
 
-        // 2. KEEPALIVE: Inject silence if no audio for 2s
+        // 2. KEEPALIVE: Inject silence if no audio for 2s (Keep this higher to avoid spamming)
         if (silenceDuration > 2000) {
             try {
                 // 3200 bytes = 100ms of silence
@@ -375,7 +479,7 @@ async function handleRecognizedText(ws, text) {
         // 3. GENERATE AUDIO (Smart Chunking / Simulated Streaming)
         // Split text into sentences to send audio asap
         const sentences = translatedText.match(/[^.?!]+[.?!]+[\]'"”’)}]*|.+/g) || [translatedText];
-        const { synthesizeSpeech } = require('./googleTtsService');
+        const { synthesizeSpeech } = googleTtsService;
 
         console.log(`[${clientData.id}] Processing ${sentences.length} chunks for: "${translatedText}"`);
 
@@ -473,8 +577,25 @@ function cleanupClient(ws) {
         if (clientData.roomId && rooms.has(clientData.roomId)) {
             const room = rooms.get(clientData.roomId);
             room.delete(ws);
+            // ROOM LOGIC: End call if only 1 user remains (Group Chat Support)
+            try {
+                if (room.size === 1) {
+                    // Room only has 1 person left => End call for them
+                    room.forEach(client => {
+                        if (client.readyState === WebSocket.OPEN) {
+                            client.send(JSON.stringify({ type: 'call_ended', reason: 'peer_disconnected' }));
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error('Error in Room End logic:', e);
+            }
+
             if (room.size === 0) {
                 rooms.delete(clientData.roomId);
+                console.log(`Room ${clientData.roomId} is now empty and removed.`);
+            } else {
+                broadcastRoomUpdate(clientData.roomId);
             }
         }
 

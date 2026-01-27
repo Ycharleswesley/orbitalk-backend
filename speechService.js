@@ -74,6 +74,13 @@ function recognizeSpeech(languageCode, onTextRecognized, onInterimText, onError)
         }
     });
 
+    // CRITICAL: Handle errors on the input stream to prevent process crash
+    pushStream.on('error', (err) => {
+        console.error('(GoogleSpeech) PushStream Error:', err);
+        // Delegate to main error handler if available, otherwise just log
+        if (onError) onError(err);
+    });
+
     return {
         write: (buffer) => {
             // Write to the wrapper stream which writes to Google stream

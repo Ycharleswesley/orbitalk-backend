@@ -1,21 +1,22 @@
 # UTELO Backend
 
-Real-time voice translation WebSocket server using Azure Cognitive Services.
+Real-time voice translation WebSocket server using Google Cloud Speech & Translate APIs.
 
 ## Features
 
 - **WebSocket Communication**: Real-time bidirectional audio streaming
-- **Speech-to-Text (STT)**: Continuous speech recognition using Azure Speech SDK
-- **Translation**: Real-time text translation using Azure Translator API
-- **Text-to-Speech (TTS)**: Synthesized audio output (16kHz, 16-bit, mono WAV)
+- **Speech-to-Text (STT)**: Continuous speech recognition using Google Cloud Speech-to-Text
+- **Translation**: Real-time text translation using Google Cloud Translation API
+- **Text-to-Speech (TTS)**: Synthesized audio output using Google Cloud Text-to-Speech (Neural2/Wavenet)
+- **Smart Chunking**: Optimized latency by processing audio in chunks
 - **Room Management**: Multi-user room support for pairing callers
 - **Half-Duplex Control**: Echo prevention during TTS playback
 
 ## Prerequisites
 
 - Node.js v16 or higher
-- Azure Speech Services subscription
-- Azure Translator subscription
+- Google Cloud Platform Account (Speech, Translate, TTS APIs enabled)
+- Google Service Account Credentials JSON
 
 ## Installation
 
@@ -28,11 +29,15 @@ npm install
 Create a `.env` file in this directory (or set environment variables):
 
 ```env
-SPEECH_KEY=your_azure_speech_key
-SPEECH_REGION=centralindia
-TRANSLATOR_KEY=your_azure_translator_key
-TRANSLATOR_REGION=centralindia
+# Server Port
 PORT=8080
+
+# Google Credentials
+# Option 1: Path to local JSON file
+GOOGLE_APPLICATION_CREDENTIALS=./google-credentials.json
+
+# Option 2: Render.com Secret File / Environment Variable
+GOOGLE_CREDENTIALS_JSON={ ... entire json content ... }
 ```
 
 > **Note**: The `config.js` file contains default configuration. Environment variables take precedence when set.

@@ -7,13 +7,7 @@ services:
     buildCommand: npm install
     startCommand: npm start
     envVars:
-      - key: SPEECH_KEY
-        sync: false
-      - key: SPEECH_REGION
-        value: centralindia
-      - key: TRANSLATOR_KEY
-        sync: false
-      - key: TRANSLATOR_REGION
-        value: centralindia
       - key: PORT
         value: 10000
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false

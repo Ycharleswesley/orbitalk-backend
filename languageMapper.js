@@ -1,5 +1,5 @@
-// Language code mapper for Azure Speech Service
-// Maps short language codes to Azure locale codes
+// Language code mapper for Google Cloud Speech Service
+// Maps short language codes to Google-compatible locale codes
 
 const languageMap = {
     // English
