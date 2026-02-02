@@ -140,7 +140,8 @@ wss.on('connection', (ws, req) => {
         speechService: null,
         // HALF-DUPLEX: Track when this client is receiving TTS playback
         isSpeaking: false,
-        speakingTimeout: null
+        speakingTimeout: null,
+        isServiceReady: false
     });
 
     ws.on('message', async (message, isBinary) => {
@@ -280,6 +281,7 @@ function broadcastRoomUpdate(roomId) {
 function cleanupClient(ws) {
     const clientData = clients.get(ws);
     if (!clientData) return;
+    clientData.isServiceReady = false;
 
     if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
 
@@ -305,6 +307,38 @@ function cleanupClient(ws) {
         }
     }
 }
+
+function checkRoomReady(roomId) {
+    if (!rooms.has(roomId)) return;
+    const room = rooms.get(roomId);
+
+    // We expect exactly 2 users for a call
+    if (room.size !== 2) return;
+
+    let allReady = true;
+    room.forEach(client => {
+        const data = clients.get(client);
+        if (!data || !data.isServiceReady) {
+            allReady = false;
+        }
+    });
+
+    if (allReady) {
+        console.log(`[Room ${roomId}] Both clients Ready. Broadcasting CALL START.`);
+        const startMsg = JSON.stringify({
+            type: 'system',
+            status: 'call_active',
+            timestamp: new Date().toISOString()
+        });
+
+        room.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(startMsg);
+            }
+        });
+    }
+}
+
 
 function startSpeechService(ws, clientData) {
     if (clientData.speechService) {
@@ -374,6 +408,8 @@ function startSpeechService(ws, clientData) {
     } catch (e) { }
 
     // NOTIFY CLIENT: Service is Ready
+    clientData.isServiceReady = true;
+
     if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
             type: 'system',
@@ -381,6 +417,9 @@ function startSpeechService(ws, clientData) {
             timestamp: new Date().toISOString()
         }));
     }
+
+    // SYNC: Check if both users in the room are ready
+    checkRoomReady(clientData.roomId);
 
     // Reset intentionalClose flag
     clientData.intentionalClose = false;
