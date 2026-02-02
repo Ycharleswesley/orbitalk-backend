@@ -6,7 +6,9 @@ const { mapLanguageCode, getVoiceNameForLang } = require('./languageMapper');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 const { Buffer } = require('buffer');
-const googleTtsService = require('./googleTtsService');
+const { Buffer } = require('buffer');
+// Google Services will be required after credentials setup to avoid race conditions and enable warmup
+
 
 // GLOBAL ERROR HANDLERS
 process.on('uncaughtException', (err) => {
@@ -23,7 +25,12 @@ try {
     require('./googleConfig').setupGoogleCredentials();
 } catch (err) {
     console.error('Failed to setup Google Credentials:', err);
+    console.error('Failed to setup Google Credentials:', err);
 }
+
+// WARMUP: Require services immediately after credentials to instantiate clients
+const googleTtsService = require('./googleTtsService');
+const speechService = require('./speechService');
 
 const PORT = process.env.PORT || 8080;
 
@@ -309,7 +316,8 @@ function startSpeechService(ws, clientData) {
     }
 
     console.log(`[${clientData.id}] Starting Google Speech Service...`);
-    const speechService = require('./speechService'); // Lazy load AFTER credentials are generated
+    // const speechService = require('./speechService'); // Removed lazy load
+
     clientData.speechService = speechService.recognizeSpeech(
         clientData.config.sourceLang,
         (text) => handleRecognizedText(ws, text),
@@ -366,6 +374,15 @@ function startSpeechService(ws, clientData) {
         }
     } catch (e) { }
 
+    // NOTIFY CLIENT: Service is Ready
+    if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'system',
+            status: 'ready',
+            timestamp: new Date().toISOString()
+        }));
+    }
+
     // Reset intentionalClose flag
     clientData.intentionalClose = false;
 
@@ -384,9 +401,9 @@ function startSpeechService(ws, clientData) {
         const silenceDuration = now - clientData.lastAudioTime;
         const interimStableDuration = now - clientData.lastInterimTime;
 
-        // 1. FORCE FINALIZE (Re-connect) on 800ms Silence if we have pending partial text
-        if (clientData.hasPendingInterim && interimStableDuration > 800) {
-            console.log(`[${clientData.id}] Force Finalizing (2s Silence)...`);
+        // 1. FORCE FINALIZE (Re-connect) on 2.5s Silence if we have pending partial text
+        if (clientData.hasPendingInterim && interimStableDuration > 2500) {
+            console.log(`[${clientData.id}] Force Finalizing (2.5s Silence)...`);
 
             if (clientData.speechService && typeof clientData.speechService.end === 'function') {
                 // Mark as intentional so error handler doesn't log it as a crash
