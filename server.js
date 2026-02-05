@@ -8,8 +8,6 @@ const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 const { Buffer } = require('buffer');
 let firebaseAdmin = null;
-// Google Services will be required after credentials setup to avoid race conditions and enable warmup
-
 
 // GLOBAL ERROR HANDLERS
 process.on('uncaughtException', (err) => {
@@ -21,11 +19,10 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('UNHANDLED REJECTION:', reason);
 });
 
-// Initialize Google Credentials for Render
+// Initialize Google Credentials
 try {
     require('./googleConfig').setupGoogleCredentials();
 } catch (err) {
-    console.error('Failed to setup Google Credentials:', err);
     console.error('Failed to setup Google Credentials:', err);
 }
 
@@ -35,7 +32,6 @@ const speechService = require('./speechService');
 
 // Initialize Firebase Admin (for FCM push)
 try {
-    // Service account JSON can be provided directly or via a file path
     const admin = require('firebase-admin');
     if (!admin.apps.length) {
         if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
@@ -108,7 +104,7 @@ const server = http.createServer(async (req, res) => {
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const { token, callId, callerId, callerName, callerAvatar, callerColor } = JSON.parse(body);
+                const { token, callId, callerId, callerName, callerAvatar, callerColor, type } = JSON.parse(body);
                 if (!token || !callId) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'Missing token or callId' }));
@@ -124,7 +120,7 @@ const server = http.createServer(async (req, res) => {
                 const message = {
                     token: token,
                     data: {
-                        type: 'call',
+                        type: String(type || 'call'),
                         callId: String(callId),
                         callerId: String(callerId || ''),
                         callerName: String(callerName || 'Caller'),
@@ -168,33 +164,8 @@ const rooms = new Map();
 // ============================================================================
 // HALF-DUPLEX AUDIO CONTROL
 // ============================================================================
-// Purpose: Prevent echo/feedback loops by gating mic audio while TTS plays.
-// 
-// Problem: When TTS audio plays on the client's speaker, the microphone picks
-//          it up and streams it back to STT, causing infinite loops:
-//          TTS → Speaker → Microphone → STT → Translation → TTS → ...
-//
-// Solution: Implement "half-duplex" mode - only one direction at a time:
-//          1. Track when each client is receiving TTS audio (isSpeaking flag)
-//          2. Gate (ignore) incoming mic audio while TTS is expected to play
-//          3. Resume STT after estimated playback duration completes
-//
-// WAV Duration Calculation:
-//          16kHz sample rate × 16-bit depth × mono = 32000 bytes/second
-//          Duration (ms) = (audioBytes / 32000) × 1000
-// ============================================================================
-
 const BYTES_PER_SECOND = 32000; // 16kHz * 16-bit * mono
 const WAV_HEADER_SIZE = 44;     // Standard WAV header size
-
-// Calculate playback duration from WAV audio buffer
-function calculatePlaybackDurationMs(audioBuffer) {
-    // Subtract WAV header to get pure PCM data size
-    const pcmBytes = audioBuffer.byteLength - WAV_HEADER_SIZE;
-    const durationMs = (pcmBytes / BYTES_PER_SECOND) * 1000;
-    // Add small buffer for safety (network latency, playback start delay)
-    return durationMs + 200;
-}
 
 console.log(`WebSocket server started on port ${PORT}`);
 
@@ -214,14 +185,19 @@ wss.on('connection', (ws, req) => {
         roomId: null,
         config: null,
         speechService: null,
-        // HALF-DUPLEX: Track when this client is receiving TTS playback
         isSpeaking: false,
         speakingTimeout: null,
-        isServiceReady: false
+        isServiceReady: false,
+        hasLoggedAudio: false,
+        audioPacketsTotal: 0,
+        audioBytesTotal: 0,
+        lastAudioLogTime: 0,
+        lastNonSilentTime: 0
     });
 
     ws.on('message', async (message, isBinary) => {
         const clientData = clients.get(ws);
+        if (!clientData) return;
 
         if (!isBinary) {
             try {
@@ -236,25 +212,21 @@ wss.on('connection', (ws, req) => {
                 console.error('Error parsing JSON message:', e);
             }
         } else {
-            // HALF-DUPLEX REMOVED: Allow Full Duplex (Simultaneous Talk & Listen)
-            // if (clientData.isSpeaking) { return; }
-
-            // Start/Restart Speech Service if not active (e.g. after timeout)
+            // Start/Restart Speech Service if not active
             if (!clientData.speechService) {
-                // If we have config, we can restart
                 if (clientData.config) {
-                    // console.log(`[${clientData.id}] Audio received but service inactive. Restarting...`);
                     startSpeechService(ws, clientData);
                 }
             }
 
             if (clientData.speechService) {
                 try {
-                    // Update timestamp for Silence Injector
-                    clientData.lastAudioTime = Date.now();
+                    const now = Date.now();
+                    clientData.lastAudioTime = now;
+                    clientData.audioPacketsTotal += 1;
+                    clientData.audioBytesTotal += message.length;
 
                     // Debug: Check for silence (all zeros)
-                    // Sample first 100 bytes for efficiency
                     let isSilence = true;
                     for (let i = 0; i < Math.min(message.length, 100); i++) {
                         if (message[i] !== 0) {
@@ -263,15 +235,26 @@ wss.on('connection', (ws, req) => {
                         }
                     }
 
-                    if (isSilence) {
-                        // console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes (SILENCE detected)`);
-                    } else {
-                        // Log "Audio Flow ESTABLISHED" only once per session to reduce noise while keeping confirmation
+                    if (!isSilence) {
+                        clientData.lastNonSilentTime = now;
                         if (!clientData.hasLoggedAudio) {
                             console.log(`[STEP 3] First Audio Packet Received! (${message.length} bytes) - AUDIO FLOW OK`);
                             clientData.hasLoggedAudio = true;
+                            clientData.lastAudioLogTime = now;
                         }
-                        console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes`);
+                    }
+
+                    if (!clientData.lastAudioLogTime || now - clientData.lastAudioLogTime >= 2000) {
+                        const silenceFor = clientData.lastNonSilentTime
+                            ? now - clientData.lastNonSilentTime
+                            : now - clientData.lastAudioTime;
+                        // console.log(
+                        //     `[${clientData.id}] Audio Summary: packets=${clientData.audioPacketsTotal}, ` +
+                        //     `bytes=${clientData.audioBytesTotal}, silenceFor=${silenceFor}ms`
+                        // );
+                        clientData.lastAudioLogTime = now;
+                        clientData.audioPacketsTotal = 0;
+                        clientData.audioBytesTotal = 0;
                     }
 
                     // Write to speech service
@@ -281,8 +264,6 @@ wss.on('connection', (ws, req) => {
                         }
                     } catch (e) {
                         console.log(`[${clientData.id}] Stream write error:`, e.message);
-                        // Optional: trigger restart manually if somehow the error callback didn't fire
-                        // But for now, let's rely on speechService.js emitting 'error'
                     }
                 } catch (e) {
                     console.error('Error handling audio message:', e);
@@ -305,26 +286,21 @@ wss.on('connection', (ws, req) => {
 function handleConfigMessage(ws, clientData, config) {
     console.log(`Received config for client ${clientData.id}:`, config);
 
-    // Map language codes to Google-compatible formats
-    // For Speech Recognition: use full code (te-IN)
-    // For Translation API: use base code only (te)
     const sourceLangFull = mapLanguageCode(config.sourceLang || 'en');
     const targetLangFull = mapLanguageCode(config.targetLang || 'es');
-
-    // Extract base language code for translation (te-IN → te)
     const sourceLangBase = sourceLangFull.split('-')[0];
     const targetLangBase = targetLangFull.split('-')[0];
 
     console.log(`Mapped languages: ${sourceLangFull} -> ${sourceLangBase}, ${targetLangFull} -> ${targetLangBase}`);
 
-    // Store configuration
     clientData.config = {
-        sourceLang: sourceLangFull,      // Full code for speech recognition (te-IN)
-        targetLang: targetLangFull,      // Full code for speech recognition (en-US)
-        sourceLangBase: sourceLangBase,  // Base code for translation (te)
-        targetLangBase: targetLangBase,  // Base code for translation (en)
-        voiceName: getVoiceNameForLang(targetLangFull) // Full code for voice selection
+        sourceLang: sourceLangFull,
+        targetLang: targetLangFull,
+        sourceLangBase: sourceLangBase,
+        targetLangBase: targetLangBase,
+        voiceName: getVoiceNameForLang(targetLangFull)
     };
+    console.log(`Voice selected for ${targetLangFull}: ${clientData.config.voiceName || 'DEFAULT'}`);
 
     const roomId = config.roomId || 'default-room';
     clientData.roomId = roomId;
@@ -336,10 +312,7 @@ function handleConfigMessage(ws, clientData, config) {
     const roomSize = rooms.get(roomId).size;
     console.log(`Client ${clientData.id} joined room ${roomId} (Total Users: ${roomSize})`);
 
-    // Notify room of new user count (Small delay to ensure connection stability)
     setTimeout(() => broadcastRoomUpdate(roomId), 500);
-
-    // Start Speech Service with Auto-Restart
     startSpeechService(ws, clientData);
 }
 
@@ -367,17 +340,17 @@ function cleanupClient(ws) {
 
     if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
 
-    // Stop Speech Service
     if (clientData.speechService) {
         try {
-            if (clientData.speechService.destroy) clientData.speechService.destroy();
+            // FIX: Use .close() for wrapper
+            if (clientData.speechService.close) clientData.speechService.close();
+            else if (clientData.speechService.destroy) clientData.speechService.destroy();
             else if (clientData.speechService.end) clientData.speechService.end();
         } catch (e) { }
     }
 
     clients.delete(ws);
 
-    // Remove client from room
     if (clientData.roomId && rooms.has(clientData.roomId)) {
         const room = rooms.get(clientData.roomId);
         room.delete(ws);
@@ -394,7 +367,6 @@ function checkRoomReady(roomId) {
     if (!rooms.has(roomId)) return;
     const room = rooms.get(roomId);
 
-    // We expect exactly 2 users for a call
     if (room.size !== 2) return;
 
     let allReady = true;
@@ -405,14 +377,8 @@ function checkRoomReady(roomId) {
         }
     });
 
-
-
-
-    // FIX: Only broadcast "call_active" ONCE per session to avoid Client UI resets on STT restart
-    // Check 'hasBroadcastStart' property on the Set object
     if (allReady && !room.hasBroadcastStart) {
         console.log(`[Room ${roomId}] Both clients Ready. Broadcasting CALL START.`);
-        // Mark room as active so we don't re-broadcast on stream restarts
         room.hasBroadcastStart = true;
 
         const startMsg = JSON.stringify({
@@ -429,49 +395,48 @@ function checkRoomReady(roomId) {
     }
 }
 
-
 function startSpeechService(ws, clientData) {
+    // Cleanup existing service if any
     if (clientData.speechService) {
         try {
-            if (clientData.speechService.destroy) clientData.speechService.destroy();
+            if (clientData.speechService.close) clientData.speechService.close();
+            else if (clientData.speechService.destroy) clientData.speechService.destroy();
             else if (clientData.speechService.end) clientData.speechService.end();
         } catch (e) { }
     }
 
     console.log(`[${clientData.id}] Starting Google Speech Service...`);
-    // const speechService = require('./speechService'); // Removed lazy load
 
-    clientData.speechService = speechService.recognizeSpeech(
+    // Create new service
+    const newService = speechService.recognizeSpeech(
         clientData.config.sourceLang,
-        (text) => handleRecognizedText(ws, text),
         (text) => {
-            // console.log(`[${clientData.id}] Recognizing: ${text}`);
-            if (clientData) {
+            // Check stale
+            if (clientData.speechService !== newService) return;
+            handleRecognizedText(ws, text);
+        },
+        (text) => {
+            // Check stale
+            if (clientData && clientData.speechService === newService) {
+                // DEBUG: Log first few chars of interim to prove STT is alive
+                // User wants to see translation, so let's log interim for now to confirm "hearing"
+                process.stdout.write(`\r[${clientData.id}] Hearing: ${text.substring(0, 50)}...`);
+
                 clientData.lastInterimTime = Date.now();
                 clientData.hasPendingInterim = true;
             }
         },
         (error) => {
-            // Ignore intentional closes or normal endings (handled by Force Finalize logic)
+            // Check stale
+            if (clientData.speechService !== newService) return;
+
             if (error.message === 'Stream ended normally') {
-                // Check if we should restart (e.g. client still connected)
                 if (ws.readyState === WebSocket.OPEN && !clientData.intentionalClose) {
                     setTimeout(() => startSpeechService(ws, clientData), 1000);
                 }
                 return;
             }
 
-            // FILTER: Ignore "Audio Timeout Error" (Long duration without audio)
-            // This happens when the user stops talking for > 10-20 seconds.
-            // We should NOT restart immediately, otherwise we get a loop.
-            // PROPER FIX: Just let it die. The next time the user speaks, we can recreate it? 
-            // OR: Just Swallow the error and don't restart? 
-            // The stream is dead on error. If we don't restart, we have no listener.
-            // BUT, if we restart immediately, we get the same error if no audio is coming.
-
-            // Current strategy: Restart, but with a longer backoff (e.g. 5 seconds) OR don't restart if silence duration is high?
-
-            // BETTER STRATEGY: Treat "Audio Timeout" as a "Silence Close".
             if (error.message && /audio timeout/i.test(error.message)) {
                 console.log(`[${clientData.id}] Audio Timeout (Silence). Stream closed. Will restart on next audio packet.`);
                 if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
@@ -482,22 +447,20 @@ function startSpeechService(ws, clientData) {
             console.log(`[${clientData.id}] Speech Error: ${error.message}. Restarting...`);
             if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
 
-            // Check if socket is still open before restarting
             if (ws.readyState === WebSocket.OPEN) {
-                // Add small delay to prevent rapid loops
                 setTimeout(() => startSpeechService(ws, clientData), 1000);
             }
         }
     );
 
-    // WARM UP: Send 10ms of silence immediately to force connection open
+    clientData.speechService = newService;
+
     try {
         if (clientData.speechService && clientData.speechService.write) {
             clientData.speechService.write(Buffer.alloc(320, 0));
         }
     } catch (e) { }
 
-    // NOTIFY CLIENT: Service is Ready
     clientData.isServiceReady = true;
 
     if (ws.readyState === WebSocket.OPEN) {
@@ -508,84 +471,65 @@ function startSpeechService(ws, clientData) {
         }));
     }
 
-    // SYNC: Check if both users in the room are ready
     checkRoomReady(clientData.roomId);
-
-    // Reset intentionalClose flag
     clientData.intentionalClose = false;
 
-    // KEEPALIVE: Inject silence if no audio received for 2 seconds
-    // This prevents Google STT from timing out due to "Long duration elapsed without audio"
     if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
-
     clientData.lastAudioTime = Date.now();
     clientData.lastInterimTime = Date.now();
     clientData.hasPendingInterim = false;
 
-    // Clear old interval if exists (redundant but safe)
-    if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
-
+    // THE TWO SECOND RULE: Keepalive Loop
     clientData.silenceInterval = setInterval(() => {
-        // Safe check: If service is missing, destroyed, or not writable, stop/return
-        if (!clientData.speechService || clientData.speechService.destroyed) return;
+        // Safe check
+        if (!clientData.speechService || clientData.speechService !== newService) return;
 
         const now = Date.now();
         const silenceDuration = now - clientData.lastAudioTime;
         const interimStableDuration = now - clientData.lastInterimTime;
 
-        // 1. FORCE FINALIZE (Re-connect) on 2.5s Silence if we have pending partial text
-        if (clientData.hasPendingInterim && interimStableDuration > 2500) {
-            console.log(`[${clientData.id}] Force Finalizing (2.5s Silence)...`);
-
-            // Mark intentional to prevent error log spam
+        // 1. Force Finalize on Silence
+        // Increased threshold to 2.5s to be safe
+        if (clientData.hasPendingInterim && interimStableDuration > 2500 && silenceDuration > 2500) {
+            console.log(`[${clientData.id}] Force Finalizing (2.5s Silence + No Audio Detected)...`);
             clientData.intentionalClose = true;
             try {
-                if (clientData.speechService.end) clientData.speechService.end();
+                if (clientData.speechService.close) clientData.speechService.close();
             } catch (e) { }
-
-            // Clear this interval before restarting to prevent race conditions
             clearInterval(clientData.silenceInterval);
             clientData.silenceInterval = null;
-
-            // Restart immediately (seamlessly)
             startSpeechService(ws, clientData);
             return;
         }
 
-        // 2. KEEPALIVE: Inject silence if no audio for 2s
+        // 2. Inject Silence to Keep Connection Alive (The 2 Second Rule)
+        // Send silence after 2 seconds of no audio
         if (silenceDuration > 2000) {
             try {
-                // Ensure stream is writable
-                if (clientData.speechService && !clientData.speechService.destroyed && clientData.speechService.writable) {
+                if (clientData.speechService && clientData.speechService.write) {
                     const silence = Buffer.alloc(3200, 0); // 100ms
                     clientData.speechService.write(silence);
                 }
-            } catch (e) {
-                // Ignore write errors
-            }
+            } catch (e) { }
         }
     }, 1000);
 }
-
 
 async function handleRecognizedText(ws, text) {
     if (!text) return;
     const clientData = clients.get(ws);
     if (!clientData || !clientData.roomId) return;
 
-    // Reset pending flag as we got a final result
     clientData.hasPendingInterim = false;
-
-    console.log(`[${clientData.id}] Recognized: ${text}`);
+    console.log(`\n[${clientData.id}] Recognized: ${text}`);
 
     try {
-        // 1. Translate Code (Prefer Claude if key is present, fallback to Google)
         let translatedText = null;
         if (process.env.ANTHROPIC_API_KEY) {
             console.log(`[${clientData.id}] Using Claude AI for translation...`);
             translatedText = await claudeService.translateText(
                 text,
-                clientData.config.sourceLang, // Claude likes descriptive names
+                clientData.config.sourceLang,
                 clientData.config.targetLang
             );
         }
@@ -600,21 +544,16 @@ async function handleRecognizedText(ws, text) {
         }
 
         console.log(`[${clientData.id}] Translated: ${translatedText}`);
-
         if (!translatedText) return;
 
-        // 2. IMMEDIATE TEXT BROADCAST (Parallel Optimization)
-        // Send text to everyone (including Speaker) RIGHT NOW.
-        // Don't wait for Audio/TTS.
         const textMessage = JSON.stringify({
             type: 'transcript',
             original: text,
             translated: translatedText,
-            isLocal: false, // Will be overridden by client logic if needed, or handled below
+            isLocal: false,
             timestamp: new Date().toISOString()
         });
 
-        // Send to Speaker (Local)
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: 'transcript',
@@ -625,12 +564,10 @@ async function handleRecognizedText(ws, text) {
             }));
         }
 
-        // Send to Room (Others)
         const room = rooms.get(clientData.roomId);
         if (room) {
             room.forEach(client => {
                 if (client !== ws && client.readyState === WebSocket.OPEN) {
-                    // Mark as remote for others
                     client.send(JSON.stringify({
                         type: 'transcript',
                         original: text,
@@ -642,18 +579,13 @@ async function handleRecognizedText(ws, text) {
             });
         }
 
-        // 3. GENERATE AUDIO (Smart Chunking / Simulated Streaming)
-        // Split text into sentences to send audio asap
         const sentences = translatedText.match(/[^.?!]+[.?!]+[\]'"”’)}]*|.+/g) || [translatedText];
         const { synthesizeSpeech } = googleTtsService;
 
         console.log(`[${clientData.id}] Processing ${sentences.length} chunks for: "${translatedText}"`);
 
-        // Process sentences sequentially to maintain order, but send ASAP
         for (const sentence of sentences) {
             if (!sentence.trim()) continue;
-
-            // console.log(`[${clientData.id}] Generating chunk: "${sentence.substring(0, 20)}..."`);
 
             const audioBuffer = await synthesizeSpeech(
                 sentence.trim(),
@@ -662,16 +594,12 @@ async function handleRecognizedText(ws, text) {
             );
 
             if (audioBuffer && audioBuffer.length > 0) {
-                // 4. BROADCAST AUDIO CHUNK
                 if (room) {
-                    // Echo for single-user testing
                     if (room.size === 1 && ws.readyState === WebSocket.OPEN) {
                         ws.send(audioBuffer);
                     }
-
                     room.forEach(client => {
                         if (client !== ws && client.readyState === WebSocket.OPEN) {
-                            // Send Audio Chunk
                             client.send(audioBuffer);
                         }
                     });
@@ -692,7 +620,6 @@ async function handleChatMessage(ws, clientData, text) {
     console.log(`[${clientData.id}] Chat Message: ${text}`);
 
     try {
-        // Translate the text
         const translatedText = await translationService.translateText(
             text,
             clientData.config.sourceLangBase,
@@ -708,7 +635,6 @@ async function handleChatMessage(ws, clientData, text) {
             timestamp: new Date().toISOString()
         });
 
-        // Broadcast to room
         const room = rooms.get(clientData.roomId);
         if (room) {
             room.forEach(client => {
@@ -719,59 +645,5 @@ async function handleChatMessage(ws, clientData, text) {
         }
     } catch (error) {
         console.error('Error handling chat message:', error);
-    }
-}
-
-function cleanupClient(ws) {
-    const clientData = clients.get(ws);
-    if (clientData) {
-        // HALF-DUPLEX: Clear any pending speaking timeout
-        if (clientData.speakingTimeout) {
-            clearTimeout(clientData.speakingTimeout);
-            clientData.speakingTimeout = null;
-        }
-
-        if (clientData.silenceInterval) {
-            clearInterval(clientData.silenceInterval);
-            clientData.silenceInterval = null;
-        }
-
-        if (clientData.speechService) {
-            try {
-                if (clientData.speechService.destroy) {
-                    clientData.speechService.destroy();
-                } else if (clientData.speechService.end) {
-                    clientData.speechService.end();
-                }
-            } catch (e) { console.error('Error destroying speechService:', e); }
-            clientData.speechService = null;
-        }
-
-        if (clientData.roomId && rooms.has(clientData.roomId)) {
-            const room = rooms.get(clientData.roomId);
-            room.delete(ws);
-            // ROOM LOGIC: End call if only 1 user remains (Group Chat Support)
-            try {
-                if (room.size === 1) {
-                    // Room only has 1 person left => End call for them
-                    room.forEach(client => {
-                        if (client.readyState === WebSocket.OPEN) {
-                            client.send(JSON.stringify({ type: 'call_ended', reason: 'peer_disconnected' }));
-                        }
-                    });
-                }
-            } catch (e) {
-                console.error('Error in Room End logic:', e);
-            }
-
-            if (room.size === 0) {
-                rooms.delete(clientData.roomId);
-                console.log(`Room ${clientData.roomId} is now empty and removed.`);
-            } else {
-                broadcastRoomUpdate(clientData.roomId);
-            }
-        }
-
-        clients.delete(ws);
     }
 }

@@ -43,7 +43,8 @@ const voiceMap = {
     'mr-IN': 'mr-IN-Wavenet-A',      // Marathi
     'bn-IN': 'bn-IN-Wavenet-A',      // Bengali
     'ta-IN': 'ta-IN-Wavenet-A',      // Tamil
-    'te-IN': 'te-IN-Wavenet-B',      // Telugu (Upgraded to WaveNet)
+    // Telugu: use Wavenet-A (B is invalid in your project)
+    'te-IN': 'te-IN-Wavenet-A',
     'ml-IN': 'ml-IN-Wavenet-A',      // Malayalam
     'kn-IN': 'kn-IN-Wavenet-A',      // Kannada
     'pa-IN': 'pa-IN-Wavenet-A',      // Punjabi
@@ -81,9 +82,9 @@ function getVoiceNameForLang(langCode) {
         return voice;
     }
 
-    // Default to English voice if not found
-    console.warn(`No voice found for ${langCode}, using en-US-Standard-C`);
-    return 'en-US-Standard-C';
+    // Let TTS choose the default voice for the given languageCode
+    console.warn(`No voice found for ${langCode}, using default voice for that language.`);
+    return null;
 }
 
 module.exports = { mapLanguageCode, getVoiceNameForLang };

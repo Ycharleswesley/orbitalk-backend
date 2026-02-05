@@ -17,22 +17,26 @@ const client = new textToSpeech.TextToSpeechClient({
  */
 async function synthesizeSpeech(text, languageCode, voiceName) {
     if (!text) return null;
-
-    const request = {
+    const buildRequest = (useVoiceName) => ({
         input: { text: text },
         voice: {
             languageCode: languageCode,
-            name: voiceName, // e.g. 'en-US-Neural2-J'
+            ...(useVoiceName && voiceName ? { name: voiceName } : {}),
         },
         audioConfig: {
             audioEncoding: 'LINEAR16', // Output format (Raw PCM for SoundStream)
             sampleRateHertz: 16000,   // Match frontend sample rate
             effectsProfileId: ['telephony-class-application'],
         },
-    };
+    });
 
     try {
-        const [response] = await client.synthesizeSpeech(request);
+        if (voiceName) {
+            console.log(`(GoogleTTS) Using voice: ${voiceName} (${languageCode})`);
+        } else {
+            console.log(`(GoogleTTS) Using default voice for ${languageCode}`);
+        }
+        const [response] = await client.synthesizeSpeech(buildRequest(true));
         // Google LINEAR16 returns a WAV file (with 44-byte header).
         // Flutter sound_stream expects RAW PCM. We must strip the header.
         if (response.audioContent && response.audioContent.length > 44) {
@@ -40,6 +44,29 @@ async function synthesizeSpeech(text, languageCode, voiceName) {
         }
         return response.audioContent;
     } catch (error) {
+        const message = error?.message || '';
+        const isInvalidVoice =
+            voiceName &&
+            (error?.code === 3 ||
+                message.includes('INVALID_ARGUMENT') ||
+                message.includes('does not exist') ||
+                message.includes('Voice'));
+
+        if (isInvalidVoice) {
+            console.warn(`(GoogleTTS) Voice "${voiceName}" invalid. Retrying with default voice for ${languageCode}.`);
+            try {
+                console.log(`(GoogleTTS) Using default voice for ${languageCode}`);
+                const [response] = await client.synthesizeSpeech(buildRequest(false));
+                if (response.audioContent && response.audioContent.length > 44) {
+                    return response.audioContent.slice(44);
+                }
+                return response.audioContent;
+            } catch (retryError) {
+                console.error('(GoogleTTS) Retry failed:', retryError);
+                throw retryError;
+            }
+        }
+
         console.error('(GoogleTTS) Synthesis Error:', error);
         throw error;
     }
