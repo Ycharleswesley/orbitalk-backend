@@ -21,7 +21,9 @@ async function synthesizeSpeech(text, languageCode, voiceName) {
         input: { text: text },
         voice: {
             languageCode: languageCode,
-            ...(useVoiceName && voiceName ? { name: voiceName } : {}),
+            ...(useVoiceName && voiceName
+                ? { name: voiceName }
+                : { ssmlGender: 'FEMALE' }),
         },
         audioConfig: {
             audioEncoding: 'LINEAR16', // Output format (Raw PCM for SoundStream)

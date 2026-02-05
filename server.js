@@ -187,12 +187,7 @@ wss.on('connection', (ws, req) => {
         speechService: null,
         isSpeaking: false,
         speakingTimeout: null,
-        isServiceReady: false,
-        hasLoggedAudio: false,
-        audioPacketsTotal: 0,
-        audioBytesTotal: 0,
-        lastAudioLogTime: 0,
-        lastNonSilentTime: 0
+        isServiceReady: false
     });
 
     ws.on('message', async (message, isBinary) => {
@@ -221,41 +216,7 @@ wss.on('connection', (ws, req) => {
 
             if (clientData.speechService) {
                 try {
-                    const now = Date.now();
-                    clientData.lastAudioTime = now;
-                    clientData.audioPacketsTotal += 1;
-                    clientData.audioBytesTotal += message.length;
-
-                    // Debug: Check for silence (all zeros)
-                    let isSilence = true;
-                    for (let i = 0; i < Math.min(message.length, 100); i++) {
-                        if (message[i] !== 0) {
-                            isSilence = false;
-                            break;
-                        }
-                    }
-
-                    if (!isSilence) {
-                        clientData.lastNonSilentTime = now;
-                        if (!clientData.hasLoggedAudio) {
-                            console.log(`[STEP 3] First Audio Packet Received! (${message.length} bytes) - AUDIO FLOW OK`);
-                            clientData.hasLoggedAudio = true;
-                            clientData.lastAudioLogTime = now;
-                        }
-                    }
-
-                    if (!clientData.lastAudioLogTime || now - clientData.lastAudioLogTime >= 2000) {
-                        const silenceFor = clientData.lastNonSilentTime
-                            ? now - clientData.lastNonSilentTime
-                            : now - clientData.lastAudioTime;
-                        // console.log(
-                        //     `[${clientData.id}] Audio Summary: packets=${clientData.audioPacketsTotal}, ` +
-                        //     `bytes=${clientData.audioBytesTotal}, silenceFor=${silenceFor}ms`
-                        // );
-                        clientData.lastAudioLogTime = now;
-                        clientData.audioPacketsTotal = 0;
-                        clientData.audioBytesTotal = 0;
-                    }
+                    clientData.lastAudioTime = Date.now();
 
                     // Write to speech service
                     try {
