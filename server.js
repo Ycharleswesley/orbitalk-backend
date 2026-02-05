@@ -2,10 +2,12 @@ const WebSocket = require('ws');
 const http = require('http'); // Added for /translate endpoint
 // const speechService = require('./speechService'); // Lazy load instead to ensure credentials exist
 const translationService = require('./translationService');
+const claudeService = require('./claudeService');
 const { mapLanguageCode, getVoiceNameForLang } = require('./languageMapper');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 const { Buffer } = require('buffer');
+let firebaseAdmin = null;
 // Google Services will be required after credentials setup to avoid race conditions and enable warmup
 
 
@@ -30,6 +32,35 @@ try {
 // WARMUP: Require services immediately after credentials to instantiate clients
 const googleTtsService = require('./googleTtsService');
 const speechService = require('./speechService');
+
+// Initialize Firebase Admin (for FCM push)
+try {
+    // Service account JSON can be provided directly or via a file path
+    const admin = require('firebase-admin');
+    if (!admin.apps.length) {
+        if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+            const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount),
+            });
+            firebaseAdmin = admin;
+            console.log('Firebase Admin initialized via FIREBASE_SERVICE_ACCOUNT_JSON');
+        } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+            const serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount),
+            });
+            firebaseAdmin = admin;
+            console.log('Firebase Admin initialized via FIREBASE_SERVICE_ACCOUNT_PATH');
+        } else {
+            console.log('Firebase Admin not initialized (missing FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_PATH)');
+        }
+    } else {
+        firebaseAdmin = admin;
+    }
+} catch (err) {
+    console.error('Firebase Admin init error:', err);
+}
 
 const PORT = process.env.PORT || 8080;
 
@@ -67,6 +98,51 @@ const server = http.createServer(async (req, res) => {
                 console.error('(API) Translation Error:', e);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Translation Failed' }));
+            }
+        });
+        return;
+    }
+
+    if (req.method === 'POST' && req.url === '/notify-call') {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const { token, callId, callerId, callerName, callerAvatar, callerColor } = JSON.parse(body);
+                if (!token || !callId) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Missing token or callId' }));
+                    return;
+                }
+
+                if (!firebaseAdmin) {
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Firebase Admin not initialized' }));
+                    return;
+                }
+
+                const message = {
+                    token: token,
+                    data: {
+                        type: 'call',
+                        callId: String(callId),
+                        callerId: String(callerId || ''),
+                        callerName: String(callerName || 'Caller'),
+                        callerAvatar: String(callerAvatar || ''),
+                        callerColor: String(callerColor || '0'),
+                    },
+                    android: {
+                        priority: 'high',
+                    },
+                };
+
+                const response = await firebaseAdmin.messaging().send(message);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, messageId: response }));
+            } catch (e) {
+                console.error('(API) Call Notify Error:', e);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Call notification failed' }));
             }
         });
         return;
@@ -124,7 +200,7 @@ console.log(`WebSocket server started on port ${PORT}`);
 
 wss.on('connection', (ws, req) => {
     const remoteIp = req.socket.remoteAddress;
-    console.log(`New client connected from IP: ${remoteIp}`);
+    console.log(`[STEP 1] New Client Connected from IP: ${remoteIp}`);
     const clientId = uuidv4();
 
     // Send Connection Acknowledgement
@@ -151,6 +227,7 @@ wss.on('connection', (ws, req) => {
             try {
                 const msg = JSON.parse(message.toString());
                 if (msg.type === 'config') {
+                    console.log(`[STEP 2] Config Received for Room: ${msg.roomId} (Language: ${msg.sourceLang})`);
                     handleConfigMessage(ws, clientData, msg);
                 } else if (msg.type === 'chat') {
                     handleChatMessage(ws, clientData, msg.text);
@@ -189,7 +266,12 @@ wss.on('connection', (ws, req) => {
                     if (isSilence) {
                         // console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes (SILENCE detected)`);
                     } else {
-                        // console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes`);
+                        // Log "Audio Flow ESTABLISHED" only once per session to reduce noise while keeping confirmation
+                        if (!clientData.hasLoggedAudio) {
+                            console.log(`[STEP 3] First Audio Packet Received! (${message.length} bytes) - AUDIO FLOW OK`);
+                            clientData.hasLoggedAudio = true;
+                        }
+                        console.log(`[${clientData.id}] Rx PCM: ${message.length} bytes`);
                     }
 
                     // Write to speech service
@@ -323,8 +405,16 @@ function checkRoomReady(roomId) {
         }
     });
 
-    if (allReady) {
+
+
+
+    // FIX: Only broadcast "call_active" ONCE per session to avoid Client UI resets on STT restart
+    // Check 'hasBroadcastStart' property on the Set object
+    if (allReady && !room.hasBroadcastStart) {
         console.log(`[Room ${roomId}] Both clients Ready. Broadcasting CALL START.`);
+        // Mark room as active so we don't re-broadcast on stream restarts
+        room.hasBroadcastStart = true;
+
         const startMsg = JSON.stringify({
             type: 'system',
             status: 'call_active',
@@ -432,8 +522,12 @@ function startSpeechService(ws, clientData) {
     clientData.lastInterimTime = Date.now();
     clientData.hasPendingInterim = false;
 
+    // Clear old interval if exists (redundant but safe)
+    if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
+
     clientData.silenceInterval = setInterval(() => {
-        if (!clientData.speechService) return;
+        // Safe check: If service is missing, destroyed, or not writable, stop/return
+        if (!clientData.speechService || clientData.speechService.destroyed) return;
 
         const now = Date.now();
         const silenceDuration = now - clientData.lastAudioTime;
@@ -443,28 +537,31 @@ function startSpeechService(ws, clientData) {
         if (clientData.hasPendingInterim && interimStableDuration > 2500) {
             console.log(`[${clientData.id}] Force Finalizing (2.5s Silence)...`);
 
-            if (clientData.speechService && typeof clientData.speechService.end === 'function') {
-                // Mark as intentional so error handler doesn't log it as a crash
-                clientData.intentionalClose = true;
-                clientData.speechService.end();
-            }
+            // Mark intentional to prevent error log spam
+            clientData.intentionalClose = true;
+            try {
+                if (clientData.speechService.end) clientData.speechService.end();
+            } catch (e) { }
+
+            // Clear this interval before restarting to prevent race conditions
+            clearInterval(clientData.silenceInterval);
+            clientData.silenceInterval = null;
 
             // Restart immediately (seamlessly)
             startSpeechService(ws, clientData);
-
-            clientData.hasPendingInterim = false;
             return;
         }
 
-        // 2. KEEPALIVE: Inject silence if no audio for 2s (Keep this higher to avoid spamming)
+        // 2. KEEPALIVE: Inject silence if no audio for 2s
         if (silenceDuration > 2000) {
             try {
-                // 3200 bytes = 100ms of silence
-                const silence = Buffer.alloc(3200, 0);
-                clientData.speechService.write(silence);
-                // console.log(`[${clientData.id}] Injected SILENCE to keep stream alive`);
+                // Ensure stream is writable
+                if (clientData.speechService && !clientData.speechService.destroyed && clientData.speechService.writable) {
+                    const silence = Buffer.alloc(3200, 0); // 100ms
+                    clientData.speechService.write(silence);
+                }
             } catch (e) {
-                // Ignore write errors, stream might be closed
+                // Ignore write errors
             }
         }
     }, 1000);
@@ -482,12 +579,26 @@ async function handleRecognizedText(ws, text) {
     console.log(`[${clientData.id}] Recognized: ${text}`);
 
     try {
-        // 1. Translate Code (Uses Google)
-        const translatedText = await translationService.translateText(
-            text,
-            clientData.config.sourceLangBase,
-            clientData.config.targetLangBase
-        );
+        // 1. Translate Code (Prefer Claude if key is present, fallback to Google)
+        let translatedText = null;
+        if (process.env.ANTHROPIC_API_KEY) {
+            console.log(`[${clientData.id}] Using Claude AI for translation...`);
+            translatedText = await claudeService.translateText(
+                text,
+                clientData.config.sourceLang, // Claude likes descriptive names
+                clientData.config.targetLang
+            );
+        }
+
+        if (!translatedText) {
+            console.log(`[${clientData.id}] Using Google for translation fallback...`);
+            translatedText = await translationService.translateText(
+                text,
+                clientData.config.sourceLangBase,
+                clientData.config.targetLangBase
+            );
+        }
+
         console.log(`[${clientData.id}] Translated: ${translatedText}`);
 
         if (!translatedText) return;
