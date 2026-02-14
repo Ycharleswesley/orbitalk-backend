@@ -370,16 +370,31 @@ function startSpeechService(ws, clientData) {
 
     // Create new service
     const newService = speechService.recognizeSpeech(
-        clientData.config.sourceLang,
         (text) => {
-            // CRITICAL FIX: Deduplicate "Natural Final" results if we already "Foce Finalized" this text
-            if (clientData.lastForcedText && text && text.trim() === clientData.lastForcedText.trim()) {
-                console.log(`[${clientData.id}] Ignoring Duplicate Final Result (Already Forced): "${text}"`);
-                clientData.lastForcedText = null; // Clear it for next time
-                return;
+            // CRITICAL FIX: Handle "Natural Final"
+            // 1. Deduplicate against committed text (what we already forced)
+            // 2. Handle partial new content if Google finalized a longer sentence than we forced
+
+            let textToProcess = text;
+
+            if (clientData.committedText) {
+                if (textToProcess.startsWith(clientData.committedText)) {
+                    // Strip the part we already forced
+                    textToProcess = textToProcess.substring(clientData.committedText.length).trim();
+                } else if (textToProcess === clientData.committedText) {
+                    textToProcess = ''; // Exact match, fully ignored
+                }
             }
 
-            handleRecognizedText(ws, text);
+            // Always RESET committedText on Natural Final (Google clears buffer)
+            clientData.committedText = '';
+
+            if (textToProcess) {
+                console.log(`[${clientData.id}] Processing Natural Final (Suffix): "${textToProcess}"`);
+                handleRecognizedText(ws, textToProcess);
+            } else {
+                console.log(`[${clientData.id}] Ignored Natural Final (Duplicate/Empty)`);
+            }
         },
         (text) => {
             // Check stale - Interim is fine to ignore if we switched
@@ -485,15 +500,29 @@ function startSpeechService(ws, clientData) {
         // Rule: If 1.4s silence AND we have pending text, force it through.
         if (clientData.hasPendingInterim && interimStableDuration > 1400 && silenceDuration > 1400) {
             if (clientData.lastInterimText) {
-                console.log(`[${clientData.id}] Force Finalizing caused by 1.4s silence: "${clientData.lastInterimText}"`);
 
-                // 0. Store this text to ignore the future "Natural Final" duplicate
-                clientData.lastForcedText = clientData.lastInterimText;
+                let textToProcess = clientData.lastInterimText;
+
+                // STRIP ACCUMULATED PREFIX (Fixes "Hello" -> "Hello How are you")
+                if (clientData.committedText && textToProcess.startsWith(clientData.committedText)) {
+                    textToProcess = textToProcess.substring(clientData.committedText.length).trim();
+                }
+
+                // If nothing new, ignore (Fixes "Hello" -> "Hello" loop)
+                if (!textToProcess) {
+                    // console.log(`[${clientData.id}] Silence trigger skipped (No new content).`);
+                    return;
+                }
+
+                console.log(`[${clientData.id}] Force Finalizing caused by 1.4s silence: "${textToProcess}"`);
 
                 // 1. Force the translation immediately
-                handleRecognizedText(ws, clientData.lastInterimText);
+                handleRecognizedText(ws, textToProcess);
 
-                // 2. Clear state
+                // 2. Update Commited Text (Store the FULL interim string so we can strip it next time)
+                clientData.committedText = clientData.lastInterimText;
+
+                // 3. Clear state (but committedText remains)
                 clientData.lastInterimText = null;
                 clientData.hasPendingInterim = false;
                 clientData.intentionalClose = true; // Mark as intentional to avoid error logs
