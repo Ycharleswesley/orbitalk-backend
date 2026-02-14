@@ -2,7 +2,7 @@ const WebSocket = require('ws');
 const http = require('http'); // Added for /translate endpoint
 // const speechService = require('./speechService'); // Lazy load instead to ensure credentials exist
 const translationService = require('./translationService');
-const claudeService = require('./claudeService');
+// const claudeService = require('./claudeService'); // REMOVED: User requested Google-only
 const { mapLanguageCode, getVoiceNameForLang } = require('./languageMapper');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
@@ -380,7 +380,6 @@ function startSpeechService(ws, clientData) {
             // Check stale
             if (clientData && clientData.speechService === newService) {
                 // DEBUG: Log first few chars of interim to prove STT is alive
-                // User wants to see translation, so let's log interim for now to confirm "hearing"
                 process.stdout.write(`\r[${clientData.id}] Hearing: ${text.substring(0, 50)}...`);
 
                 clientData.lastInterimTime = Date.now();
@@ -416,13 +415,15 @@ function startSpeechService(ws, clientData) {
 
     clientData.speechService = newService;
 
+    // CRITICAL: Signal that this user is ready, so "checkRoomReady" can trigger "Call Active"
+    // This was MISSING in previous "perfect" code, causing "Red Dot" / Connectivity issues.
+    clientData.isServiceReady = true;
+
     try {
         if (clientData.speechService && clientData.speechService.write) {
             clientData.speechService.write(Buffer.alloc(320, 0));
         }
     } catch (e) { }
-
-    clientData.isServiceReady = true;
 
     if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -432,7 +433,9 @@ function startSpeechService(ws, clientData) {
         }));
     }
 
+    // CRITICAL: Check room ready status
     checkRoomReady(clientData.roomId);
+
     clientData.intentionalClose = false;
 
     if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
@@ -485,24 +488,12 @@ async function handleRecognizedText(ws, text) {
     console.log(`\n[${clientData.id}] Recognized: ${text}`);
 
     try {
-        let translatedText = null;
-        if (process.env.ANTHROPIC_API_KEY) {
-            console.log(`[${clientData.id}] Using Claude AI for translation...`);
-            translatedText = await claudeService.translateText(
-                text,
-                clientData.config.sourceLang,
-                clientData.config.targetLang
-            );
-        }
-
-        if (!translatedText) {
-            console.log(`[${clientData.id}] Using Google for translation fallback...`);
-            translatedText = await translationService.translateText(
-                text,
-                clientData.config.sourceLangBase,
-                clientData.config.targetLangBase
-            );
-        }
+        // GOOGLE ONLY TRANSLATION (Claude Removed)
+        const translatedText = await translationService.translateText(
+            text,
+            clientData.config.sourceLangBase,
+            clientData.config.targetLangBase
+        );
 
         console.log(`[${clientData.id}] Translated: ${translatedText}`);
         if (!translatedText) return;
