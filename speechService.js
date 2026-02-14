@@ -21,7 +21,7 @@ function recognizeSpeech(languageCode, onTextRecognized, onInterimText, onError)
             sampleRateHertz: 16000,
             languageCode: languageCode,
             enableAutomaticPunctuation: true,
-            model: 'latest_long', // OPTIMIZATION: Better for continuous streaming
+            // model: 'latest_long', // REVERT: Switched back to default for better Te-IN accuracy
             useEnhanced: true,
         },
         interimResults: true, // Get partial results
