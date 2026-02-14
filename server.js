@@ -451,9 +451,9 @@ function startSpeechService(ws, clientData) {
         const interimStableDuration = now - clientData.lastInterimTime;
 
         // 1. Force Finalize on Silence
-        // Tuned to 2000ms as requested
-        if (clientData.hasPendingInterim && interimStableDuration > 2000 && silenceDuration > 2000) {
-            console.log(`[${clientData.id}] Force Finalizing (2.0s Silence Rule)...`);
+        // Tuned to 1000ms (1.0s) as requested for "Snappy" short sentences
+        if (clientData.hasPendingInterim && interimStableDuration > 1000 && silenceDuration > 1000) {
+            console.log(`[${clientData.id}] Force Finalizing (1.0s Silence Rule)...`);
             clientData.intentionalClose = true;
             try {
                 if (clientData.speechService.close) clientData.speechService.close();
@@ -465,8 +465,8 @@ function startSpeechService(ws, clientData) {
         }
 
         // 2. Inject Silence to Keep Connection Alive
-        // Send silence after 2 seconds of no audio
-        if (silenceDuration > 2000) {
+        // Send silence after 1 seconds of no audio to match the new rhythm
+        if (silenceDuration > 1000) {
             try {
                 if (clientData.speechService && clientData.speechService.write) {
                     const silence = Buffer.alloc(3200, 0); // 100ms
