@@ -491,15 +491,12 @@ function startSpeechService(ws, clientData) {
                 clientData.hasPendingInterim = false;
                 clientData.intentionalClose = true; // Mark as intentional to avoid error logs
 
-                // 3. RESTART to clear Google's buffer (Clean Slate for next sentence)
-                // This is the "Automatic Cut" - only happens here.
-                console.log(`[${clientData.id}] Restarting stream to clear buffer...`);
-                try {
-                    if (clientData.speechService.close) clientData.speechService.close();
-                } catch (e) { }
-                clearInterval(clientData.silenceInterval);
-                clientData.silenceInterval = null;
-                startSpeechService(ws, clientData);
+                // 3. NO RESTART (Continuous Mode maintained as per user request)
+                // We do NOT close the stream here. We just output what we have.
+                console.log(`[${clientData.id}] Force Finalize Complete. Continuing stream...`);
+
+                // Clear the manual silence interval but NOT the stream
+                // (Actually we keep the interval running, just reset the text buffer)
                 return;
             }
         }
