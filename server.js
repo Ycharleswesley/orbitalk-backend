@@ -416,7 +416,8 @@ function startSpeechService(ws, clientData) {
 
             if (error.message === 'Stream ended normally') {
                 if (ws.readyState === WebSocket.OPEN && !clientData.intentionalClose) {
-                    setTimeout(() => startSpeechService(ws, clientData), 100); // FIX: Faster restart (100ms vs 1000ms)
+                    console.log(`[${clientData.id}] Stream ended normally. Restarting in 250ms...`);
+                    setTimeout(() => startSpeechService(ws, clientData), 250); // FIX: Safe Fast Restart (250ms)
                 }
                 return;
             }
@@ -428,11 +429,11 @@ function startSpeechService(ws, clientData) {
                 return;
             }
 
-            console.log(`[${clientData.id}] Speech Error: ${error.message}. Restarting...`);
+            console.log(`[${clientData.id}] Speech Error: ${error.message}. Restarting in 250ms...`);
             if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
 
             if (ws.readyState === WebSocket.OPEN) {
-                setTimeout(() => startSpeechService(ws, clientData), 100); // FIX: Faster restart (100ms)
+                setTimeout(() => startSpeechService(ws, clientData), 250); // FIX: Safe Fast Restart (250ms)
             }
         }
     );
@@ -476,7 +477,8 @@ function startSpeechService(ws, clientData) {
         const interimStableDuration = now - clientData.lastInterimTime;
 
         // 1. Force Finalize on Silence
-        // Tuned to 1500ms (1.5s) - Balanced Mode (Prevents lost sentences vs snappiness)
+        // CONTINUOUS MODE: Disabled to prevent audio loss during restart.
+        /*
         if (clientData.hasPendingInterim && interimStableDuration > 1500 && silenceDuration > 1500) {
             // console.log(`[${clientData.id}] Force Finalizing (1.5s Silence Rule)...`); // Removed log
             clientData.intentionalClose = true;
@@ -488,6 +490,7 @@ function startSpeechService(ws, clientData) {
             startSpeechService(ws, clientData);
             return;
         }
+        */
 
         // 2. Inject Silence to Keep Connection Alive
         // Send silence after 1.5 seconds of no audio
