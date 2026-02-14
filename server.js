@@ -366,7 +366,7 @@ function startSpeechService(ws, clientData) {
         } catch (e) { }
     }
 
-    console.log(`[${clientData.id}] Starting Google Speech Service...`);
+    // console.log(`[${clientData.id}] Starting Google Speech Service...`); // REMOVED LOG as per user request
 
     // Create new service
     const newService = speechService.recognizeSpeech(
@@ -384,6 +384,30 @@ function startSpeechService(ws, clientData) {
 
                 clientData.lastInterimTime = Date.now();
                 clientData.hasPendingInterim = true;
+
+                // NEW: Broadcast "Speaking Start" event (Debounced)
+                // If we haven't sent a speaking event recently (e.g., last 2 seconds), send one now.
+                const now = Date.now();
+                if (!clientData.lastSpeakingBroadcast || (now - clientData.lastSpeakingBroadcast > 2000)) {
+                    clientData.lastSpeakingBroadcast = now;
+
+                    const speakingMsg = JSON.stringify({
+                        type: 'system',
+                        status: 'speaking_start',
+                        senderId: clientData.id,
+                        timestamp: new Date().toISOString()
+                    });
+
+                    // Broadcast to ROOM (so the OTHER person hears/sees it)
+                    const room = rooms.get(clientData.roomId);
+                    if (room) {
+                        room.forEach(client => {
+                            if (client !== ws && client.readyState === WebSocket.OPEN) {
+                                client.send(speakingMsg);
+                            }
+                        });
+                    }
+                }
             }
         },
         (error) => {
@@ -392,13 +416,13 @@ function startSpeechService(ws, clientData) {
 
             if (error.message === 'Stream ended normally') {
                 if (ws.readyState === WebSocket.OPEN && !clientData.intentionalClose) {
-                    setTimeout(() => startSpeechService(ws, clientData), 1000);
+                    setTimeout(() => startSpeechService(ws, clientData), 100); // FIX: Faster restart (100ms vs 1000ms)
                 }
                 return;
             }
 
             if (error.message && /audio timeout/i.test(error.message)) {
-                console.log(`[${clientData.id}] Audio Timeout (Silence). Stream closed. Will restart on next audio packet.`);
+                // console.log(`[${clientData.id}] Audio Timeout (Silence). Stream closed. Will restart on next audio packet.`);
                 if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
                 clientData.speechService = null;
                 return;
@@ -408,7 +432,7 @@ function startSpeechService(ws, clientData) {
             if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
 
             if (ws.readyState === WebSocket.OPEN) {
-                setTimeout(() => startSpeechService(ws, clientData), 1000);
+                setTimeout(() => startSpeechService(ws, clientData), 100); // FIX: Faster restart (100ms)
             }
         }
     );
