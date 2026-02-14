@@ -454,7 +454,7 @@ function startSpeechService(ws, clientData) {
         // 1. Force Finalize on Silence
         // Tuned to 1500ms (1.5s) - Balanced Mode (Prevents lost sentences vs snappiness)
         if (clientData.hasPendingInterim && interimStableDuration > 1500 && silenceDuration > 1500) {
-            console.log(`[${clientData.id}] Force Finalizing (1.5s Silence Rule)...`);
+            // console.log(`[${clientData.id}] Force Finalizing (1.5s Silence Rule)...`); // Removed log
             clientData.intentionalClose = true;
             try {
                 if (clientData.speechService.close) clientData.speechService.close();
