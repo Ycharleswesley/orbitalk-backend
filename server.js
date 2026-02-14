@@ -370,10 +370,17 @@ function startSpeechService(ws, clientData) {
 
     // Create new service
     const newService = speechService.recognizeSpeech(
-        clientData.config.sourceLang,
         (text) => {
-            // CRITICAL FIX: Allow results from previous service (e.g. after Force Finalize)
-            // if (clientData.speechService !== newService) return;
+            // CRITICAL FIX: Deduplicate "Natural Final" results if we already "Foce Finalized" this text
+            if (clientData.lastForcedText && text && text.trim() === clientData.lastForcedText.trim()) {
+                console.log(`[${clientData.id}] Ignoring Duplicate Final Result (Already Forced): "${text}"`);
+                clientData.lastForcedText = null; // Clear it for next time
+                return;
+            }
+
+            // Helper: If the new text contains the old text (Google added more words), we might want to process ONLY the new part?
+            // For now, simple Exact Match deduplication is safest.
+
             handleRecognizedText(ws, text);
         },
         (text) => {
@@ -481,6 +488,9 @@ function startSpeechService(ws, clientData) {
         if (clientData.hasPendingInterim && interimStableDuration > 1400 && silenceDuration > 1400) {
             if (clientData.lastInterimText) {
                 console.log(`[${clientData.id}] Force Finalizing caused by 1.4s silence: "${clientData.lastInterimText}"`);
+
+                // 0. Store this text to ignore the future "Natural Final" duplicate
+                clientData.lastForcedText = clientData.lastInterimText;
 
                 // 1. Force the translation immediately
                 handleRecognizedText(ws, clientData.lastInterimText);
