@@ -386,14 +386,8 @@ function startSpeechService(ws, clientData) {
                 clientData.lastInterimTime = Date.now();
                 clientData.hasPendingInterim = true;
 
-                // NEW: Real-Time Interim Translation (Throttled)
-                const now = Date.now();
-                if (!clientData.lastInterimTranslation || (now - clientData.lastInterimTranslation > 300)) {
-                    clientData.lastInterimTranslation = now;
-                    handleInterimTranslation(ws, clientData, text);
-                }
-
                 // NEW: Broadcast "Speaking Start" event (Debounced)
+                const now = Date.now();
                 if (!clientData.lastSpeakingBroadcast || (now - clientData.lastSpeakingBroadcast > 2000)) {
                     clientData.lastSpeakingBroadcast = now;
 
@@ -483,10 +477,10 @@ function startSpeechService(ws, clientData) {
         const interimStableDuration = now - clientData.lastInterimTime;
 
         // 1. Force Finalize on Silence (SMART MODE)
-        // Rule: If 2.0s silence AND we have pending text, force it through.
-        if (clientData.hasPendingInterim && interimStableDuration > 2000 && silenceDuration > 2000) {
+        // Rule: If 1.4s silence AND we have pending text, force it through.
+        if (clientData.hasPendingInterim && interimStableDuration > 1400 && silenceDuration > 1400) {
             if (clientData.lastInterimText) {
-                console.log(`[${clientData.id}] Force Finalizing caused by 2.0s silence: "${clientData.lastInterimText}"`);
+                console.log(`[${clientData.id}] Force Finalizing caused by 1.4s silence: "${clientData.lastInterimText}"`);
 
                 // 1. Force the translation immediately
                 handleRecognizedText(ws, clientData.lastInterimText);
