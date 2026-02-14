@@ -382,6 +382,7 @@ function startSpeechService(ws, clientData) {
                 // REMOVED LOGGING as per user request
                 // process.stdout.write(`\r[${clientData.id}] Hearing: ${text.substring(0, 50)}...`);
 
+                clientData.lastInterimText = text; // STORE INTERIM TEXT FOR FORCE FINALIZE
                 clientData.lastInterimTime = Date.now();
                 clientData.hasPendingInterim = true;
 
@@ -476,21 +477,32 @@ function startSpeechService(ws, clientData) {
         const silenceDuration = now - clientData.lastAudioTime;
         const interimStableDuration = now - clientData.lastInterimTime;
 
-        // 1. Force Finalize on Silence
-        // CONTINUOUS MODE: Disabled to prevent audio loss during restart.
-        /*
-        if (clientData.hasPendingInterim && interimStableDuration > 1500 && silenceDuration > 1500) {
-            // console.log(`[${clientData.id}] Force Finalizing (1.5s Silence Rule)...`); // Removed log
-            clientData.intentionalClose = true;
-            try {
-                if (clientData.speechService.close) clientData.speechService.close();
-            } catch (e) { }
-            clearInterval(clientData.silenceInterval);
-            clientData.silenceInterval = null;
-            startSpeechService(ws, clientData);
-            return;
+        // 1. Force Finalize on Silence (SMART MODE)
+        // Rule: If 2.0s silence AND we have pending text, force it through.
+        if (clientData.hasPendingInterim && interimStableDuration > 2000 && silenceDuration > 2000) {
+            if (clientData.lastInterimText) {
+                console.log(`[${clientData.id}] Force Finalizing caused by 2.0s silence: "${clientData.lastInterimText}"`);
+
+                // 1. Force the translation immediately
+                handleRecognizedText(ws, clientData.lastInterimText);
+
+                // 2. Clear state
+                clientData.lastInterimText = null;
+                clientData.hasPendingInterim = false;
+                clientData.intentionalClose = true; // Mark as intentional to avoid error logs
+
+                // 3. RESTART to clear Google's buffer (Clean Slate for next sentence)
+                // This is the "Automatic Cut" - only happens here.
+                console.log(`[${clientData.id}] Restarting stream to clear buffer...`);
+                try {
+                    if (clientData.speechService.close) clientData.speechService.close();
+                } catch (e) { }
+                clearInterval(clientData.silenceInterval);
+                clientData.silenceInterval = null;
+                startSpeechService(ws, clientData);
+                return;
+            }
         }
-        */
 
         // 2. Inject Silence to Keep Connection Alive
         // Send silence after 1.5 seconds of no audio
