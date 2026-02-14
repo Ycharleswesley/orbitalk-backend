@@ -479,6 +479,7 @@ function startSpeechService(ws, clientData) {
 
         const now = Date.now();
         const silenceDuration = now - clientData.lastAudioTime;
+        const interimStableDuration = now - clientData.lastInterimTime; // FIXED: Added missing declaration
 
         // 1. Force Finalize on Silence (SMART MODE)
         // Rule: If 1.4s silence AND we have pending text, force it through.
