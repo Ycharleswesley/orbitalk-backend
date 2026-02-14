@@ -386,9 +386,14 @@ function startSpeechService(ws, clientData) {
                 clientData.lastInterimTime = Date.now();
                 clientData.hasPendingInterim = true;
 
-                // NEW: Broadcast "Speaking Start" event (Debounced)
-                // If we haven't sent a speaking event recently (e.g., last 2 seconds), send one now.
+                // NEW: Real-Time Interim Translation (Throttled)
                 const now = Date.now();
+                if (!clientData.lastInterimTranslation || (now - clientData.lastInterimTranslation > 300)) {
+                    clientData.lastInterimTranslation = now;
+                    handleInterimTranslation(ws, clientData, text);
+                }
+
+                // NEW: Broadcast "Speaking Start" event (Debounced)
                 if (!clientData.lastSpeakingBroadcast || (now - clientData.lastSpeakingBroadcast > 2000)) {
                     clientData.lastSpeakingBroadcast = now;
 
