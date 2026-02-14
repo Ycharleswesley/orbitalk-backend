@@ -252,7 +252,7 @@ function handleConfigMessage(ws, clientData, config) {
     const sourceLangBase = sourceLangFull.split('-')[0];
     const targetLangBase = targetLangFull.split('-')[0];
 
-    console.log(`Mapped languages: ${sourceLangFull} -> ${sourceLangBase}, ${targetLangFull} -> ${targetLangBase}`);
+    console.log(`Mapped languages: ${sourceLangFull} (Base: ${sourceLangBase}) -> ${targetLangFull} (Base: ${targetLangBase})`);
 
     clientData.config = {
         sourceLang: sourceLangFull,
@@ -388,6 +388,9 @@ function startSpeechService(ws, clientData) {
 
             // Always RESET committedText on Natural Final (Google clears buffer)
             clientData.committedText = '';
+            // CRITICAL FIX: Clear stale interim text so it doesn't trigger Force Finalize again
+            clientData.lastInterimText = null;
+            clientData.hasPendingInterim = false;
 
             if (textToProcess) {
                 console.log(`[${clientData.id}] Processing Natural Final (Suffix): "${textToProcess}"`);
@@ -446,11 +449,13 @@ function startSpeechService(ws, clientData) {
                 // console.log(`[${clientData.id}] Audio Timeout (Silence). Stream closed. Will restart on next audio packet.`);
                 if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
                 clientData.speechService = null;
+                clientData.lastInterimText = null; // Clear stale
                 return;
             }
 
             console.log(`[${clientData.id}] Speech Error: ${error.message}. Restarting in 250ms...`);
             if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
+            clientData.lastInterimText = null; // Clear stale
 
             if (ws.readyState === WebSocket.OPEN) {
                 setTimeout(() => startSpeechService(ws, clientData), 250); // FIX: Safe Fast Restart (250ms)
@@ -464,7 +469,7 @@ function startSpeechService(ws, clientData) {
     clientData.isServiceReady = true;
 
     try {
-        if (clientData.speechService && clientData.speechService.write) {
+        if (clientData.speechService && !clientData.speechService.destroyed && !clientData.speechService.writableEnded && clientData.speechService.write) {
             clientData.speechService.write(Buffer.alloc(320, 0));
         }
     } catch (e) { }
@@ -542,7 +547,7 @@ function startSpeechService(ws, clientData) {
         // Send silence after 1.5 seconds of no audio
         if (silenceDuration > 1500) {
             try {
-                if (clientData.speechService && clientData.speechService.write) {
+                if (clientData.speechService && !clientData.speechService.destroyed && !clientData.speechService.writableEnded && clientData.speechService.write) {
                     const silence = Buffer.alloc(3200, 0); // 100ms
                     clientData.speechService.write(silence);
                 }
