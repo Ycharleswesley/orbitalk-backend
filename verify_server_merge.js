@@ -35,9 +35,9 @@ try {
         process.exit(1);
     }
 
-    // 5. Check for "Force Finalizing (2.5s Silence" string (specific to robust version)
-    if (!content.includes("Force Finalizing (2.5s Silence")) {
-        console.error("FAIL: Working logic (2.5s Silence Rule) seems missing.");
+    // 5. Check for "Force Finalizing (2.0s Silence" string (specific to robust version)
+    if (!content.includes("Force Finalizing (2.0s Silence")) {
+        console.error("FAIL: Working logic (2.0s Silence Rule) seems missing.");
         process.exit(1);
     }
 

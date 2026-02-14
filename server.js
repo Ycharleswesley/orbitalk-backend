@@ -372,14 +372,13 @@ function startSpeechService(ws, clientData) {
     const newService = speechService.recognizeSpeech(
         clientData.config.sourceLang,
         (text) => {
-            // Check stale
-            if (clientData.speechService !== newService) return;
+            // CRITICAL FIX: Allow results from previous service (e.g. after Force Finalize)
+            // if (clientData.speechService !== newService) return;
             handleRecognizedText(ws, text);
         },
         (text) => {
-            // Check stale
+            // Check stale - Interim is fine to ignore if we switched
             if (clientData && clientData.speechService === newService) {
-                // DEBUG: Log first few chars of interim to prove STT is alive
                 process.stdout.write(`\r[${clientData.id}] Hearing: ${text.substring(0, 50)}...`);
 
                 clientData.lastInterimTime = Date.now();
@@ -416,7 +415,6 @@ function startSpeechService(ws, clientData) {
     clientData.speechService = newService;
 
     // CRITICAL: Signal that this user is ready, so "checkRoomReady" can trigger "Call Active"
-    // This was MISSING in previous "perfect" code, causing "Red Dot" / Connectivity issues.
     clientData.isServiceReady = true;
 
     try {
@@ -453,9 +451,9 @@ function startSpeechService(ws, clientData) {
         const interimStableDuration = now - clientData.lastInterimTime;
 
         // 1. Force Finalize on Silence
-        // Increased threshold to 2.5s to be safe
-        if (clientData.hasPendingInterim && interimStableDuration > 2500 && silenceDuration > 2500) {
-            console.log(`[${clientData.id}] Force Finalizing (2.5s Silence + No Audio Detected)...`);
+        // Tuned to 2000ms as requested
+        if (clientData.hasPendingInterim && interimStableDuration > 2000 && silenceDuration > 2000) {
+            console.log(`[${clientData.id}] Force Finalizing (2.0s Silence Rule)...`);
             clientData.intentionalClose = true;
             try {
                 if (clientData.speechService.close) clientData.speechService.close();
@@ -466,7 +464,7 @@ function startSpeechService(ws, clientData) {
             return;
         }
 
-        // 2. Inject Silence to Keep Connection Alive (The 2 Second Rule)
+        // 2. Inject Silence to Keep Connection Alive
         // Send silence after 2 seconds of no audio
         if (silenceDuration > 2000) {
             try {
