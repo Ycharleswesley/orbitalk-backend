@@ -370,6 +370,7 @@ function startSpeechService(ws, clientData) {
 
     // Create new service
     const newService = speechService.recognizeSpeech(
+        clientData.config.sourceLang,
         (text) => {
             // CRITICAL FIX: Deduplicate "Natural Final" results if we already "Foce Finalized" this text
             if (clientData.lastForcedText && text && text.trim() === clientData.lastForcedText.trim()) {
@@ -377,9 +378,6 @@ function startSpeechService(ws, clientData) {
                 clientData.lastForcedText = null; // Clear it for next time
                 return;
             }
-
-            // Helper: If the new text contains the old text (Google added more words), we might want to process ONLY the new part?
-            // For now, simple Exact Match deduplication is safest.
 
             handleRecognizedText(ws, text);
         },
@@ -481,7 +479,6 @@ function startSpeechService(ws, clientData) {
 
         const now = Date.now();
         const silenceDuration = now - clientData.lastAudioTime;
-        const interimStableDuration = now - clientData.lastInterimTime;
 
         // 1. Force Finalize on Silence (SMART MODE)
         // Rule: If 1.4s silence AND we have pending text, force it through.
@@ -509,6 +506,7 @@ function startSpeechService(ws, clientData) {
                 return;
             }
         }
+
 
         // 2. Inject Silence to Keep Connection Alive
         // Send silence after 1.5 seconds of no audio
