@@ -379,7 +379,8 @@ function startSpeechService(ws, clientData) {
         (text) => {
             // Check stale - Interim is fine to ignore if we switched
             if (clientData && clientData.speechService === newService) {
-                process.stdout.write(`\r[${clientData.id}] Hearing: ${text.substring(0, 50)}...`);
+                // REMOVED LOGGING as per user request
+                // process.stdout.write(`\r[${clientData.id}] Hearing: ${text.substring(0, 50)}...`);
 
                 clientData.lastInterimTime = Date.now();
                 clientData.hasPendingInterim = true;
