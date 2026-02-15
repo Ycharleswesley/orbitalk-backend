@@ -187,7 +187,8 @@ wss.on('connection', (ws, req) => {
         speechService: null,
         isSpeaking: false,
         speakingTimeout: null,
-        isServiceReady: false
+        isServiceReady: false,
+        audioBacklog: [] // Replay Buffer for "broken sentences" fix
     });
 
     ws.on('message', async (message, isBinary) => {
@@ -218,7 +219,14 @@ wss.on('connection', (ws, req) => {
                 try {
                     clientData.lastAudioTime = Date.now();
 
-                    // Write to speech service
+                    // 1. Update Rolling Backlog (Last ~2 seconds)
+                    // Each chunk is ~320 bytes (10ms). 2s = 200 chunks.
+                    clientData.audioBacklog.push(message);
+                    if (clientData.audioBacklog.length > 200) {
+                        clientData.audioBacklog.shift();
+                    }
+
+                    // 2. Write to speech service
                     try {
                         if (clientData.speechService) {
                             clientData.speechService.write(message);
@@ -356,7 +364,7 @@ function checkRoomReady(roomId) {
     }
 }
 
-function startSpeechService(ws, clientData) {
+function startSpeechService(ws, clientData, isRestart = false) {
     // Cleanup existing service if any
     if (clientData.speechService) {
         try {
@@ -455,7 +463,8 @@ function startSpeechService(ws, clientData) {
                 // FIX: Auto-restart immediately instead of waiting for next packet
                 // This prevents "Client disconnected" if the frontend is still alive but paused
                 if (ws.readyState === WebSocket.OPEN) {
-                    setTimeout(() => startSpeechService(ws, clientData), 250);
+                    const restartDelay = (clientData.config && clientData.config.sourceLang === 'te-IN') ? 50 : 250;
+                    setTimeout(() => startSpeechService(ws, clientData, true), restartDelay);
                 }
                 return;
             }
@@ -465,7 +474,8 @@ function startSpeechService(ws, clientData) {
             clientData.lastInterimText = null; // Clear stale
 
             if (ws.readyState === WebSocket.OPEN) {
-                setTimeout(() => startSpeechService(ws, clientData), 250); // FIX: Safe Fast Restart (250ms)
+                const restartDelay = (clientData.config && clientData.config.sourceLang === 'te-IN') ? 50 : 250;
+                setTimeout(() => startSpeechService(ws, clientData, true), restartDelay);
             }
         }
     );
@@ -477,7 +487,17 @@ function startSpeechService(ws, clientData) {
 
     try {
         if (clientData.speechService && !clientData.speechService.destroyed && !clientData.speechService.writableEnded && clientData.speechService.write) {
-            clientData.speechService.write(Buffer.alloc(320, 0));
+
+            // FIX: Replay Audio Backlog for Telugu (te-IN) Restarts
+            if (isRestart && clientData.config.sourceLang === 'te-IN' && clientData.audioBacklog && clientData.audioBacklog.length > 0) {
+                console.log(`[${clientData.id}] Replaying ${clientData.audioBacklog.length} chunks of buffered audio (Telugu Optimization)...`);
+                for (const chunk of clientData.audioBacklog) {
+                    clientData.speechService.write(chunk);
+                }
+            } else {
+                // Standard Init (Silence packet) - Only if NOT replaying (avoid mixing)
+                clientData.speechService.write(Buffer.alloc(320, 0));
+            }
         }
     } catch (e) { }
 
