@@ -656,7 +656,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
         const interimStableDuration = now - clientData.lastInterimTime; // FIXED: Added missing declaration
 
         // 0. Flush a held short chunk once it has waited long enough.
-        if (clientData.pendingForceText && silenceDuration > FORCE_FINAL_SILENCE_MS) {
+        if (clientData.pendingForceText && silenceDuration >= FORCE_FINAL_SILENCE_MS) {
             const pendingAge = now - clientData.pendingForceSince;
             const pendingText = clientData.pendingForceText;
             const holdPending = shouldHoldForFullSentence(pendingText) && pendingAge < FORCE_FINAL_SHORT_HOLD_MS;
@@ -685,7 +685,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
 
         // 1. Force Finalize on Silence (SMART MODE)
         // Rule: If 2.0s silence AND we have pending text, force it through.
-        if (clientData.hasPendingInterim && interimStableDuration > FORCE_FINAL_SILENCE_MS && silenceDuration > FORCE_FINAL_SILENCE_MS) {
+        if (clientData.hasPendingInterim && interimStableDuration >= FORCE_FINAL_SILENCE_MS && silenceDuration >= FORCE_FINAL_SILENCE_MS) {
             if (clientData.lastInterimText) {
 
                 let textToProcess = clientData.lastInterimText;
@@ -714,9 +714,9 @@ function startSpeechService(ws, clientData, isRestart = false) {
 
                 // Hold very short/no-punctuation chunks so full sentence can arrive first.
                 if (shouldHoldForFullSentence(textToProcess)) {
-                    const hasCommittedContext = !!(clientData.committedText || '').trim();
-                    const pendingAge = clientData.pendingForceSince ? (Date.now() - clientData.pendingForceSince) : 0;
-                    if (hasCommittedContext && pendingAge < FORCE_FINAL_SHORT_HOLD_MS) {
+                    // Only wait if this fragment has not been stable for long enough yet.
+                    // Once the 2s silence rule is met, emit immediately to avoid extra latency.
+                    if (interimStableDuration < FORCE_FINAL_SHORT_HOLD_MS) {
                         if (!clientData.pendingForceSince) {
                             clientData.pendingForceSince = Date.now();
                         }
@@ -731,18 +731,8 @@ function startSpeechService(ws, clientData, isRestart = false) {
                         return;
                     }
 
-                    if (!clientData.pendingForceText) {
-                        clientData.pendingForceSince = Date.now();
-                    }
-                    if (!clientData.pendingForceText ||
-                        textToProcess.length >= clientData.pendingForceText.length ||
-                        textToProcess.startsWith(clientData.pendingForceText)) {
-                        clientData.pendingForceText = textToProcess;
-                    }
-
-                    clientData.lastInterimText = null;
-                    clientData.hasPendingInterim = false;
-                    return;
+                    clientData.pendingForceText = '';
+                    clientData.pendingForceSince = 0;
                 }
 
                 clientData.pendingForceText = '';
