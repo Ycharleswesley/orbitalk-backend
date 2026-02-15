@@ -166,6 +166,36 @@ const rooms = new Map();
 // ============================================================================
 const BYTES_PER_SECOND = 32000; // 16kHz * 16-bit * mono
 const WAV_HEADER_SIZE = 44;     // Standard WAV header size
+const DUPLICATE_TRANSCRIPT_WINDOW_MS = 4000;
+const FORCE_FINAL_SILENCE_MS = 2000;
+const FORCE_FINAL_SHORT_HOLD_MS = 4500;
+const FORCE_FINAL_SHORT_WORDS_MAX = 3;
+const FORCE_FINAL_SHORT_CHARS_MAX = 20;
+
+function normalizeForDedup(text) {
+    return (text || '').toString().trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function hasTerminalPunctuation(text) {
+    return /[.?!।]$/.test((text || '').trim());
+}
+
+function countWords(text) {
+    const trimmed = (text || '').trim();
+    if (!trimmed) return 0;
+    return trimmed.split(/\s+/).filter(Boolean).length;
+}
+
+function shouldHoldForFullSentence(text) {
+    const trimmed = (text || '').trim();
+    if (!trimmed) return false;
+    if (hasTerminalPunctuation(trimmed)) return false;
+
+    const words = countWords(trimmed);
+    if (words <= FORCE_FINAL_SHORT_WORDS_MAX) return true;
+    if (trimmed.length <= FORCE_FINAL_SHORT_CHARS_MAX && words <= 4) return true;
+    return false;
+}
 
 console.log(`WebSocket server started on port ${PORT}`);
 
@@ -188,7 +218,10 @@ wss.on('connection', (ws, req) => {
         isSpeaking: false,
         speakingTimeout: null,
         isServiceReady: false,
-        audioBacklog: [] // Replay Buffer for "broken sentences" fix
+        lastProcessedText: '',
+        lastProcessedAt: 0,
+        pendingForceText: '',
+        pendingForceSince: 0
     });
 
     ws.on('message', async (message, isBinary) => {
@@ -218,15 +251,7 @@ wss.on('connection', (ws, req) => {
             if (clientData.speechService) {
                 try {
                     clientData.lastAudioTime = Date.now();
-
-                    // 1. Update Rolling Backlog (Last ~2 seconds)
-                    // Each chunk is ~320 bytes (10ms). 2s = 200 chunks.
-                    clientData.audioBacklog.push(message);
-                    if (clientData.audioBacklog.length > 200) {
-                        clientData.audioBacklog.shift();
-                    }
-
-                    // 2. Write to speech service
+                    // Write incoming mic PCM directly to active stream.
                     try {
                         if (clientData.speechService) {
                             clientData.speechService.write(message);
@@ -400,11 +425,18 @@ function startSpeechService(ws, clientData, isRestart = false) {
             // CRITICAL FIX: Clear stale interim text so it doesn't trigger Force Finalize again
             clientData.lastInterimText = null;
             clientData.hasPendingInterim = false;
+            clientData.lastInterimTime = Date.now();
+            clientData.pendingForceText = '';
+            clientData.pendingForceSince = 0;
 
-            // FIX: Clear Audio Backlog on success so we don't replay what we just transcribed
-            clientData.audioBacklog = [];
+            const normalized = normalizeForDedup(textToProcess);
+            const isRecentDuplicate = normalized &&
+                normalized === clientData.lastProcessedText &&
+                (Date.now() - clientData.lastProcessedAt) < DUPLICATE_TRANSCRIPT_WINDOW_MS;
 
-            if (textToProcess) {
+            if (textToProcess && !isRecentDuplicate) {
+                clientData.lastProcessedText = normalized;
+                clientData.lastProcessedAt = Date.now();
                 console.log(`[${clientData.id}] Processing Natural Final (Suffix): "${textToProcess}"`);
                 handleRecognizedText(ws, textToProcess);
             } else {
@@ -417,9 +449,22 @@ function startSpeechService(ws, clientData, isRestart = false) {
                 // REMOVED LOGGING as per user request
                 // process.stdout.write(`\r[${clientData.id}] Hearing: ${text.substring(0, 50)}...`);
 
-                clientData.lastInterimText = text; // STORE INTERIM TEXT FOR FORCE FINALIZE
-                clientData.lastInterimTime = Date.now();
-                clientData.hasPendingInterim = true;
+                const trimmed = (text || '').trim();
+                if (trimmed) {
+                    if (trimmed !== clientData.lastInterimText) {
+                        clientData.lastInterimTime = Date.now();
+                    }
+
+                    // If a held chunk is being extended by new interim text, keep the longer form.
+                    if (clientData.pendingForceText &&
+                        trimmed.startsWith(clientData.pendingForceText) &&
+                        trimmed.length > clientData.pendingForceText.length) {
+                        clientData.pendingForceText = trimmed;
+                    }
+
+                    clientData.lastInterimText = trimmed; // STORE INTERIM TEXT FOR FORCE FINALIZE
+                    clientData.hasPendingInterim = true;
+                }
 
                 // NEW: Broadcast "Speaking Start" event (Debounced)
                 const now = Date.now();
@@ -462,12 +507,14 @@ function startSpeechService(ws, clientData, isRestart = false) {
                 if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
                 clientData.speechService = null;
                 clientData.lastInterimText = null; // Clear stale
+                clientData.hasPendingInterim = false;
 
-                // FIX: Auto-restart immediately instead of waiting for next packet
-                // This prevents "Client disconnected" if the frontend is still alive but paused
+                // Restart only if audio was flowing recently; otherwise wait for next mic packet.
                 if (ws.readyState === WebSocket.OPEN) {
-                    const restartDelay = (clientData.config && clientData.config.sourceLang === 'te-IN') ? 50 : 250;
-                    setTimeout(() => startSpeechService(ws, clientData, true), restartDelay);
+                    const recentAudio = clientData.lastAudioTime && (Date.now() - clientData.lastAudioTime < 1500);
+                    if (recentAudio) {
+                        setTimeout(() => startSpeechService(ws, clientData, true), 250);
+                    }
                 }
                 return;
             }
@@ -477,8 +524,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
             clientData.lastInterimText = null; // Clear stale
 
             if (ws.readyState === WebSocket.OPEN) {
-                const restartDelay = (clientData.config && clientData.config.sourceLang === 'te-IN') ? 50 : 250;
-                setTimeout(() => startSpeechService(ws, clientData, true), restartDelay);
+                setTimeout(() => startSpeechService(ws, clientData, true), 250);
             }
         }
     );
@@ -490,17 +536,8 @@ function startSpeechService(ws, clientData, isRestart = false) {
 
     try {
         if (clientData.speechService && !clientData.speechService.destroyed && !clientData.speechService.writableEnded && clientData.speechService.write) {
-
-            // FIX: Replay Audio Backlog for Telugu (te-IN) Restarts
-            if (isRestart && clientData.config.sourceLang === 'te-IN' && clientData.audioBacklog && clientData.audioBacklog.length > 0) {
-                console.log(`[${clientData.id}] Replaying ${clientData.audioBacklog.length} chunks of buffered audio (Telugu Optimization)...`);
-                for (const chunk of clientData.audioBacklog) {
-                    clientData.speechService.write(chunk);
-                }
-            } else {
-                // Standard Init (Silence packet) - Only if NOT replaying (avoid mixing)
-                clientData.speechService.write(Buffer.alloc(320, 0));
-            }
+            // Prime the stream with a short silence packet.
+            clientData.speechService.write(Buffer.alloc(320, 0));
         }
     } catch (e) { }
 
@@ -521,6 +558,8 @@ function startSpeechService(ws, clientData, isRestart = false) {
     clientData.lastAudioTime = Date.now();
     clientData.lastInterimTime = Date.now();
     clientData.hasPendingInterim = false;
+    clientData.pendingForceText = '';
+    clientData.pendingForceSince = 0;
 
     // THE TWO SECOND RULE: Keepalive Loop
     clientData.silenceInterval = setInterval(() => {
@@ -531,9 +570,37 @@ function startSpeechService(ws, clientData, isRestart = false) {
         const silenceDuration = now - clientData.lastAudioTime;
         const interimStableDuration = now - clientData.lastInterimTime; // FIXED: Added missing declaration
 
+        // 0. Flush a held short chunk once it has waited long enough.
+        if (clientData.pendingForceText && silenceDuration > FORCE_FINAL_SILENCE_MS) {
+            const pendingAge = now - clientData.pendingForceSince;
+            const pendingText = clientData.pendingForceText;
+            const holdPending = shouldHoldForFullSentence(pendingText) && pendingAge < FORCE_FINAL_SHORT_HOLD_MS;
+
+            if (!holdPending) {
+                const normalizedPending = normalizeForDedup(pendingText);
+                const isRecentPendingDuplicate = normalizedPending &&
+                    normalizedPending === clientData.lastProcessedText &&
+                    (Date.now() - clientData.lastProcessedAt) < DUPLICATE_TRANSCRIPT_WINDOW_MS;
+
+                if (!isRecentPendingDuplicate) {
+                    console.log(`[${clientData.id}] Emitting buffered sentence after hold: "${pendingText}"`);
+                    handleRecognizedText(ws, pendingText);
+                    clientData.lastProcessedText = normalizedPending;
+                    clientData.lastProcessedAt = Date.now();
+                    clientData.committedText = pendingText;
+                }
+
+                clientData.pendingForceText = '';
+                clientData.pendingForceSince = 0;
+                clientData.lastInterimText = null;
+                clientData.hasPendingInterim = false;
+                return;
+            }
+        }
+
         // 1. Force Finalize on Silence (SMART MODE)
         // Rule: If 2.0s silence AND we have pending text, force it through.
-        if (clientData.hasPendingInterim && interimStableDuration > 2000 && silenceDuration > 2000) {
+        if (clientData.hasPendingInterim && interimStableDuration > FORCE_FINAL_SILENCE_MS && silenceDuration > FORCE_FINAL_SILENCE_MS) {
             if (clientData.lastInterimText) {
 
                 let textToProcess = clientData.lastInterimText;
@@ -545,14 +612,46 @@ function startSpeechService(ws, clientData, isRestart = false) {
 
                 // If nothing new, ignore (Fixes "Hello" -> "Hello" loop)
                 if (!textToProcess) {
-                    // console.log(`[${clientData.id}] Silence trigger skipped (No new content).`);
+                    clientData.lastInterimText = null;
+                    clientData.hasPendingInterim = false;
                     return;
                 }
+
+                const normalized = normalizeForDedup(textToProcess);
+                const isRecentDuplicate = normalized &&
+                    normalized === clientData.lastProcessedText &&
+                    (Date.now() - clientData.lastProcessedAt) < DUPLICATE_TRANSCRIPT_WINDOW_MS;
+                if (isRecentDuplicate) {
+                    clientData.lastInterimText = null;
+                    clientData.hasPendingInterim = false;
+                    return;
+                }
+
+                // Hold very short/no-punctuation chunks so full sentence can arrive first.
+                if (shouldHoldForFullSentence(textToProcess)) {
+                    if (!clientData.pendingForceText) {
+                        clientData.pendingForceSince = Date.now();
+                    }
+                    if (!clientData.pendingForceText ||
+                        textToProcess.length >= clientData.pendingForceText.length ||
+                        textToProcess.startsWith(clientData.pendingForceText)) {
+                        clientData.pendingForceText = textToProcess;
+                    }
+
+                    clientData.lastInterimText = null;
+                    clientData.hasPendingInterim = false;
+                    return;
+                }
+
+                clientData.pendingForceText = '';
+                clientData.pendingForceSince = 0;
 
                 console.log(`[${clientData.id}] Force Finalizing caused by 2.0s silence: "${textToProcess}"`);
 
                 // 1. Force the translation immediately
                 handleRecognizedText(ws, textToProcess);
+                clientData.lastProcessedText = normalized;
+                clientData.lastProcessedAt = Date.now();
 
                 // 2. Update Commited Text (Store the FULL interim string so we can strip it next time)
                 clientData.committedText = clientData.lastInterimText;
@@ -561,9 +660,6 @@ function startSpeechService(ws, clientData, isRestart = false) {
                 clientData.lastInterimText = null;
                 clientData.hasPendingInterim = false;
                 clientData.intentionalClose = true; // Mark as intentional to avoid error logs
-
-                // FIX: Clear Audio Backlog on success so we don't replay what we just transcribed
-                clientData.audioBacklog = [];
 
                 // 3. NO RESTART (Continuous Mode maintained as per user request)
                 // We do NOT close the stream here. We just output what we have.
@@ -581,7 +677,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
         if (silenceDuration > 1500) {
             try {
                 if (clientData.speechService && !clientData.speechService.destroyed && !clientData.speechService.writableEnded && clientData.speechService.write) {
-                    const silence = Buffer.alloc(3200, 0); // 100ms
+                    const silence = Buffer.alloc(BYTES_PER_SECOND, 0); // 1 second PCM silence
                     clientData.speechService.write(silence);
                 }
             } catch (e) { }
@@ -595,6 +691,8 @@ async function handleRecognizedText(ws, text) {
     if (!clientData || !clientData.roomId) return;
 
     clientData.hasPendingInterim = false;
+    clientData.pendingForceText = '';
+    clientData.pendingForceSince = 0;
     console.log(`\n[${clientData.id}] Recognized: ${text}`);
 
     try {
