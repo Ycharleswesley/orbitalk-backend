@@ -168,7 +168,7 @@ const BYTES_PER_SECOND = 32000; // 16kHz * 16-bit * mono
 const WAV_HEADER_SIZE = 44;     // Standard WAV header size
 const DUPLICATE_TRANSCRIPT_WINDOW_MS = 4000;
 const FORCE_FINAL_SILENCE_MS = 2000;
-const FORCE_FINAL_SHORT_HOLD_MS = 4500;
+const FORCE_FINAL_SHORT_HOLD_MS = 7000;
 const FORCE_FINAL_SHORT_WORDS_MAX = 3;
 const FORCE_FINAL_SHORT_CHARS_MAX = 20;
 
@@ -195,6 +195,28 @@ function shouldHoldForFullSentence(text) {
     if (words <= FORCE_FINAL_SHORT_WORDS_MAX) return true;
     if (trimmed.length <= FORCE_FINAL_SHORT_CHARS_MAX && words <= 4) return true;
     return false;
+}
+
+function appendCommittedText(clientData, text) {
+    const next = (text || '').trim();
+    if (!next) return;
+
+    const current = (clientData.committedText || '').trim();
+    if (!current) {
+        clientData.committedText = next;
+        return;
+    }
+
+    if (next.startsWith(current)) {
+        clientData.committedText = next;
+        return;
+    }
+
+    if (current.startsWith(next)) {
+        return;
+    }
+
+    clientData.committedText = `${current} ${next}`.trim();
 }
 
 console.log(`WebSocket server started on port ${PORT}`);
@@ -587,7 +609,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
                     handleRecognizedText(ws, pendingText);
                     clientData.lastProcessedText = normalizedPending;
                     clientData.lastProcessedAt = Date.now();
-                    clientData.committedText = pendingText;
+                    appendCommittedText(clientData, pendingText);
                 }
 
                 clientData.pendingForceText = '';
@@ -629,6 +651,23 @@ function startSpeechService(ws, clientData, isRestart = false) {
 
                 // Hold very short/no-punctuation chunks so full sentence can arrive first.
                 if (shouldHoldForFullSentence(textToProcess)) {
+                    const hasCommittedContext = !!(clientData.committedText || '').trim();
+                    const pendingAge = clientData.pendingForceSince ? (Date.now() - clientData.pendingForceSince) : 0;
+                    if (hasCommittedContext && pendingAge < (FORCE_FINAL_SHORT_HOLD_MS * 2)) {
+                        if (!clientData.pendingForceSince) {
+                            clientData.pendingForceSince = Date.now();
+                        }
+                        if (!clientData.pendingForceText ||
+                            textToProcess.length >= clientData.pendingForceText.length ||
+                            textToProcess.startsWith(clientData.pendingForceText)) {
+                            clientData.pendingForceText = textToProcess;
+                        }
+
+                        clientData.lastInterimText = null;
+                        clientData.hasPendingInterim = false;
+                        return;
+                    }
+
                     if (!clientData.pendingForceText) {
                         clientData.pendingForceSince = Date.now();
                     }
@@ -654,7 +693,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
                 clientData.lastProcessedAt = Date.now();
 
                 // 2. Update Commited Text (Store the FULL interim string so we can strip it next time)
-                clientData.committedText = clientData.lastInterimText;
+                appendCommittedText(clientData, clientData.lastInterimText);
 
                 // 3. Clear state (but committedText remains)
                 clientData.lastInterimText = null;
