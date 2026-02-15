@@ -22,7 +22,10 @@ function recognizeSpeech(languageCode, onTextRecognized, onInterimText, onError)
             languageCode: languageCode,
             enableAutomaticPunctuation: true,
             // model: 'latest_long', // REVERT: Switched back to default for better Te-IN accuracy
-            useEnhanced: true,
+
+            // FIX: 'te-IN' might not support 'useEnhanced' or specific models.
+            // Only use enhanced for major languages to avoid "Bad language code" or "Invalid Config" errors.
+            useEnhanced: ['en-US', 'es-ES', 'fr-FR', 'de-DE'].includes(languageCode),
         },
         interimResults: true, // Get partial results
         singleUtterance: false, // Ensure stream stays open
