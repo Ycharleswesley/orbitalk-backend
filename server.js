@@ -447,10 +447,16 @@ function startSpeechService(ws, clientData) {
             }
 
             if (error.message && /audio timeout/i.test(error.message)) {
-                // console.log(`[${clientData.id}] Audio Timeout (Silence). Stream closed. Will restart on next audio packet.`);
+                // console.log(`[${clientData.id}] Audio Timeout (Silence). Stream closed. Restarting...`);
                 if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
                 clientData.speechService = null;
                 clientData.lastInterimText = null; // Clear stale
+
+                // FIX: Auto-restart immediately instead of waiting for next packet
+                // This prevents "Client disconnected" if the frontend is still alive but paused
+                if (ws.readyState === WebSocket.OPEN) {
+                    setTimeout(() => startSpeechService(ws, clientData), 250);
+                }
                 return;
             }
 
