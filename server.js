@@ -166,14 +166,19 @@ const rooms = new Map();
 // ============================================================================
 const BYTES_PER_SECOND = 32000; // 16kHz * 16-bit * mono
 const WAV_HEADER_SIZE = 44;     // Standard WAV header size
-const DUPLICATE_TRANSCRIPT_WINDOW_MS = 4000;
+const DUPLICATE_TRANSCRIPT_WINDOW_MS = 12000;
 const FORCE_FINAL_SILENCE_MS = 2000;
 const FORCE_FINAL_SHORT_HOLD_MS = 1800;
 const FORCE_FINAL_SHORT_WORDS_MAX = 3;
 const FORCE_FINAL_SHORT_CHARS_MAX = 20;
 
 function normalizeForDedup(text) {
-    return (text || '').toString().trim().replace(/\s+/g, ' ').toLowerCase();
+    return (text || '')
+        .toString()
+        .normalize('NFC')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
 }
 
 function hasTerminalPunctuation(text) {
@@ -219,6 +224,44 @@ function appendCommittedText(clientData, text) {
     clientData.committedText = `${current} ${next}`.trim();
 }
 
+function collapseRepeatedPhrase(text) {
+    const trimmed = (text || '').trim();
+    if (!trimmed) return '';
+
+    const tokens = trimmed.split(/\s+/).filter(Boolean);
+    if (tokens.length < 4) return trimmed;
+
+    // Collapse exact repeated blocks (e.g., "x y x y" -> "x y").
+    for (let unit = 2; unit <= Math.floor(tokens.length / 2); unit++) {
+        if (tokens.length % unit !== 0) continue;
+        const repeatCount = tokens.length / unit;
+        if (repeatCount < 2) continue;
+
+        const firstBlock = tokens.slice(0, unit).join(' ');
+        let allSame = true;
+        for (let i = 1; i < repeatCount; i++) {
+            const block = tokens.slice(i * unit, (i + 1) * unit).join(' ');
+            if (block !== firstBlock) {
+                allSame = false;
+                break;
+            }
+        }
+        if (allSame) {
+            return firstBlock;
+        }
+    }
+
+    return trimmed;
+}
+
+function isSessionActive(ws, clientData, generation) {
+    if (!clientData || clientData.isClosed) return false;
+    if (clients.get(ws) !== clientData) return false;
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    if (generation !== undefined && clientData.streamGeneration !== generation) return false;
+    return true;
+}
+
 console.log(`WebSocket server started on port ${PORT}`);
 
 wss.on('connection', (ws, req) => {
@@ -240,6 +283,8 @@ wss.on('connection', (ws, req) => {
         isSpeaking: false,
         speakingTimeout: null,
         isServiceReady: false,
+        isClosed: false,
+        streamGeneration: 0,
         lastProcessedText: '',
         lastProcessedAt: 0,
         pendingForceText: '',
@@ -352,6 +397,8 @@ function broadcastRoomUpdate(roomId) {
 function cleanupClient(ws) {
     const clientData = clients.get(ws);
     if (!clientData) return;
+    clientData.isClosed = true;
+    clientData.streamGeneration = (clientData.streamGeneration || 0) + 1;
     clientData.isServiceReady = false;
 
     if (clientData.silenceInterval) clearInterval(clientData.silenceInterval);
@@ -374,6 +421,16 @@ function cleanupClient(ws) {
             rooms.delete(clientData.roomId);
             console.log(`Room ${clientData.roomId} is now empty and removed.`);
         } else {
+            const callEndedMsg = JSON.stringify({
+                type: 'call_ended',
+                reason: 'peer_disconnected',
+                timestamp: new Date().toISOString()
+            });
+            room.forEach(client => {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.send(callEndedMsg);
+                }
+            });
             broadcastRoomUpdate(clientData.roomId);
         }
     }
@@ -423,10 +480,15 @@ function startSpeechService(ws, clientData, isRestart = false) {
 
     // console.log(`[${clientData.id}] Starting Google Speech Service...`); // REMOVED LOG as per user request
 
+    clientData.isClosed = false;
+    const streamGeneration = (clientData.streamGeneration || 0) + 1;
+    clientData.streamGeneration = streamGeneration;
+
     // Create new service
     const newService = speechService.recognizeSpeech(
         clientData.config.sourceLang,
         (text) => {
+            if (!isSessionActive(ws, clientData, streamGeneration)) return;
             // CRITICAL FIX: Handle "Natural Final"
             // 1. Deduplicate against committed text (what we already forced)
             // 2. Handle partial new content if Google finalized a longer sentence than we forced
@@ -460,14 +522,14 @@ function startSpeechService(ws, clientData, isRestart = false) {
                 clientData.lastProcessedText = normalized;
                 clientData.lastProcessedAt = Date.now();
                 console.log(`[${clientData.id}] Processing Natural Final (Suffix): "${textToProcess}"`);
-                handleRecognizedText(ws, textToProcess);
+                handleRecognizedText(ws, textToProcess, streamGeneration);
             } else {
                 console.log(`[${clientData.id}] Ignored Natural Final (Duplicate/Empty)`);
             }
         },
         (text) => {
             // Check stale - Interim is fine to ignore if we switched
-            if (clientData && clientData.speechService === newService) {
+            if (clientData && clientData.speechService === newService && isSessionActive(ws, clientData, streamGeneration)) {
                 // REMOVED LOGGING as per user request
                 // process.stdout.write(`\r[${clientData.id}] Hearing: ${text.substring(0, 50)}...`);
 
@@ -515,6 +577,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
         (error) => {
             // Check stale
             if (clientData.speechService !== newService) return;
+            if (!isSessionActive(ws, clientData, streamGeneration)) return;
 
             if (error.message === 'Stream ended normally') {
                 if (ws.readyState === WebSocket.OPEN && !clientData.intentionalClose) {
@@ -606,7 +669,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
 
                 if (!isRecentPendingDuplicate) {
                     console.log(`[${clientData.id}] Emitting buffered sentence after hold: "${pendingText}"`);
-                    handleRecognizedText(ws, pendingText);
+                    handleRecognizedText(ws, pendingText, streamGeneration);
                     clientData.lastProcessedText = normalizedPending;
                     clientData.lastProcessedAt = Date.now();
                     appendCommittedText(clientData, pendingText);
@@ -688,7 +751,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
                 console.log(`[${clientData.id}] Force Finalizing caused by 2.0s silence: "${textToProcess}"`);
 
                 // 1. Force the translation immediately
-                handleRecognizedText(ws, textToProcess);
+                handleRecognizedText(ws, textToProcess, streamGeneration);
                 clientData.lastProcessedText = normalized;
                 clientData.lastProcessedAt = Date.now();
 
@@ -724,23 +787,31 @@ function startSpeechService(ws, clientData, isRestart = false) {
     }, 1000);
 }
 
-async function handleRecognizedText(ws, text) {
+async function handleRecognizedText(ws, text, generation) {
     if (!text) return;
     const clientData = clients.get(ws);
     if (!clientData || !clientData.roomId) return;
+    if (!isSessionActive(ws, clientData, generation)) return;
+
+    const collapsedText = collapseRepeatedPhrase(text);
+    if (collapsedText !== text) {
+        console.log(`[${clientData.id}] Collapsed repeated phrase: "${text}" -> "${collapsedText}"`);
+    }
+    const textToTranslate = collapsedText || text;
 
     clientData.hasPendingInterim = false;
     clientData.pendingForceText = '';
     clientData.pendingForceSince = 0;
-    console.log(`\n[${clientData.id}] Recognized: ${text}`);
+    console.log(`\n[${clientData.id}] Recognized: ${textToTranslate}`);
 
     try {
         // GOOGLE ONLY TRANSLATION (Claude Removed)
         const translatedText = await translationService.translateText(
-            text,
+            textToTranslate,
             clientData.config.sourceLangBase,
             clientData.config.targetLangBase
         );
+        if (!isSessionActive(ws, clientData, generation)) return;
 
         console.log(`[${clientData.id}] Translated: ${translatedText}`);
         if (!translatedText) return;
@@ -756,7 +827,7 @@ async function handleRecognizedText(ws, text) {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: 'transcript',
-                original: text,
+                original: textToTranslate,
                 translated: translatedText,
                 isLocal: true,
                 timestamp: new Date().toISOString()
@@ -769,7 +840,7 @@ async function handleRecognizedText(ws, text) {
                 if (client !== ws && client.readyState === WebSocket.OPEN) {
                     client.send(JSON.stringify({
                         type: 'transcript',
-                        original: text,
+                        original: textToTranslate,
                         translated: translatedText,
                         isLocal: false,
                         timestamp: new Date().toISOString()
@@ -784,6 +855,7 @@ async function handleRecognizedText(ws, text) {
         console.log(`[${clientData.id}] Processing ${sentences.length} chunks for: "${translatedText}"`);
 
         for (const sentence of sentences) {
+            if (!isSessionActive(ws, clientData, generation)) break;
             if (!sentence.trim()) continue;
 
             const audioBuffer = await synthesizeSpeech(
@@ -791,6 +863,7 @@ async function handleRecognizedText(ws, text) {
                 clientData.config.targetLang,
                 clientData.config.voiceName
             );
+            if (!isSessionActive(ws, clientData, generation)) break;
 
             if (audioBuffer && audioBuffer.length > 0) {
                 if (room) {
