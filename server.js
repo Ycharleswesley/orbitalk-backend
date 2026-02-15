@@ -401,6 +401,9 @@ function startSpeechService(ws, clientData, isRestart = false) {
             clientData.lastInterimText = null;
             clientData.hasPendingInterim = false;
 
+            // FIX: Clear Audio Backlog on success so we don't replay what we just transcribed
+            clientData.audioBacklog = [];
+
             if (textToProcess) {
                 console.log(`[${clientData.id}] Processing Natural Final (Suffix): "${textToProcess}"`);
                 handleRecognizedText(ws, textToProcess);
@@ -558,6 +561,9 @@ function startSpeechService(ws, clientData, isRestart = false) {
                 clientData.lastInterimText = null;
                 clientData.hasPendingInterim = false;
                 clientData.intentionalClose = true; // Mark as intentional to avoid error logs
+
+                // FIX: Clear Audio Backlog on success so we don't replay what we just transcribed
+                clientData.audioBacklog = [];
 
                 // 3. NO RESTART (Continuous Mode maintained as per user request)
                 // We do NOT close the stream here. We just output what we have.
