@@ -503,8 +503,8 @@ function startSpeechService(ws, clientData) {
         const interimStableDuration = now - clientData.lastInterimTime; // FIXED: Added missing declaration
 
         // 1. Force Finalize on Silence (SMART MODE)
-        // Rule: If 1.4s silence AND we have pending text, force it through.
-        if (clientData.hasPendingInterim && interimStableDuration > 1400 && silenceDuration > 1400) {
+        // Rule: If 2.0s silence AND we have pending text, force it through.
+        if (clientData.hasPendingInterim && interimStableDuration > 2000 && silenceDuration > 2000) {
             if (clientData.lastInterimText) {
 
                 let textToProcess = clientData.lastInterimText;
@@ -520,7 +520,7 @@ function startSpeechService(ws, clientData) {
                     return;
                 }
 
-                console.log(`[${clientData.id}] Force Finalizing caused by 1.4s silence: "${textToProcess}"`);
+                console.log(`[${clientData.id}] Force Finalizing caused by 2.0s silence: "${textToProcess}"`);
 
                 // 1. Force the translation immediately
                 handleRecognizedText(ws, textToProcess);
