@@ -43,7 +43,8 @@ const voiceMap = {
     'mr-IN': 'mr-IN-Wavenet-A',      // Marathi
     'bn-IN': 'bn-IN-Wavenet-A',      // Bengali
     'ta-IN': 'ta-IN-Wavenet-A',      // Tamil
-    'te-IN': 'te-IN-Wavenet-A',      // Telugu (Reverted as per user request)
+    // Telugu: Standard-A (Stable, fixes "Invalid Voice" error)
+    'te-IN': 'te-IN-Standard-A',
     'ml-IN': 'ml-IN-Wavenet-A',      // Malayalam
     'kn-IN': 'kn-IN-Wavenet-A',      // Kannada
     'pa-IN': 'pa-IN-Wavenet-A',      // Punjabi
