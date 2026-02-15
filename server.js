@@ -168,7 +168,7 @@ const BYTES_PER_SECOND = 32000; // 16kHz * 16-bit * mono
 const WAV_HEADER_SIZE = 44;     // Standard WAV header size
 const DUPLICATE_TRANSCRIPT_WINDOW_MS = 4000;
 const FORCE_FINAL_SILENCE_MS = 2000;
-const FORCE_FINAL_SHORT_HOLD_MS = 7000;
+const FORCE_FINAL_SHORT_HOLD_MS = 1800;
 const FORCE_FINAL_SHORT_WORDS_MAX = 3;
 const FORCE_FINAL_SHORT_CHARS_MAX = 20;
 
@@ -653,7 +653,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
                 if (shouldHoldForFullSentence(textToProcess)) {
                     const hasCommittedContext = !!(clientData.committedText || '').trim();
                     const pendingAge = clientData.pendingForceSince ? (Date.now() - clientData.pendingForceSince) : 0;
-                    if (hasCommittedContext && pendingAge < (FORCE_FINAL_SHORT_HOLD_MS * 2)) {
+                    if (hasCommittedContext && pendingAge < FORCE_FINAL_SHORT_HOLD_MS) {
                         if (!clientData.pendingForceSince) {
                             clientData.pendingForceSince = Date.now();
                         }
