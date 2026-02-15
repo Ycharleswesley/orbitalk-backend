@@ -370,6 +370,7 @@ function startSpeechService(ws, clientData) {
 
     // Create new service
     const newService = speechService.recognizeSpeech(
+        clientData.config.sourceLang,
         (text) => {
             // CRITICAL FIX: Handle "Natural Final"
             // 1. Deduplicate against committed text (what we already forced)
