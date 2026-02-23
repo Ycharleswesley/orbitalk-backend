@@ -708,9 +708,12 @@ function startSpeechService(ws, clientData, isRestart = false) {
         if (clientData.pendingForceText && silenceDuration >= FORCE_FINAL_SILENCE_MS) {
             const pendingAge = now - clientData.pendingForceSince;
             const pendingText = clientData.pendingForceText;
-            const holdPending = shouldHoldForFullSentence(pendingText) && pendingAge < FORCE_FINAL_SHORT_HOLD_MS;
 
-            if (!holdPending) {
+            // NEW LOGIC: Only flush if it's a complete sentence OR it's been held for > 4 seconds.
+            const isCompleteSentence = hasTerminalPunctuation(pendingText);
+            const isVeryLongHold = pendingAge >= 4000;
+
+            if (isCompleteSentence || isVeryLongHold) {
                 const normalizedPending = normalizeForDedup(pendingText);
                 const isRecentPendingDuplicate = normalizedPending &&
                     normalizedPending === clientData.lastProcessedText &&
@@ -766,26 +769,27 @@ function startSpeechService(ws, clientData, isRestart = false) {
                 }
 
                 // Hold very short/no-punctuation chunks so full sentence can arrive first.
-                if (shouldHoldForFullSentence(textToProcess)) {
-                    // Only wait if this fragment has not been stable for long enough yet.
-                    // Once the 2s silence rule is met, emit immediately to avoid extra latency.
-                    if (interimStableDuration < FORCE_FINAL_SHORT_HOLD_MS) {
-                        if (!clientData.pendingForceSince) {
-                            clientData.pendingForceSince = Date.now();
-                        }
-                        if (!clientData.pendingForceText ||
-                            textToProcess.length >= clientData.pendingForceText.length ||
-                            textToProcess.startsWith(clientData.pendingForceText)) {
-                            clientData.pendingForceText = textToProcess;
-                        }
+                // UPDATED LOGIC: We want the FULL sentence. 
+                // Only force an interim string if it looks like a complete sentence 
+                // AND has been stable for a while, OR if the silence is very long (e.g., > 4s).
 
-                        clientData.lastInterimText = null;
-                        clientData.hasPendingInterim = false;
-                        return;
+                const isCompleteSentence = hasTerminalPunctuation(textToProcess);
+                const isVeryLongSilence = silenceDuration >= 4000;
+
+                if (!isCompleteSentence && !isVeryLongSilence) {
+                    console.log(`[${clientData.id}] Holding partial sentence: "${textToProcess}" (Stable: ${interimStableDuration}ms, Silence: ${silenceDuration}ms)`);
+                    if (!clientData.pendingForceSince) {
+                        clientData.pendingForceSince = Date.now();
+                    }
+                    if (!clientData.pendingForceText ||
+                        textToProcess.length >= clientData.pendingForceText.length ||
+                        textToProcess.startsWith(clientData.pendingForceText)) {
+                        clientData.pendingForceText = textToProcess;
                     }
 
-                    clientData.pendingForceText = '';
-                    clientData.pendingForceSince = 0;
+                    clientData.lastInterimText = null;
+                    clientData.hasPendingInterim = false;
+                    return;
                 }
 
                 clientData.pendingForceText = '';
