@@ -178,10 +178,10 @@ const rooms = new Map();
 const BYTES_PER_SECOND = 32000; // 16kHz * 16-bit * mono
 const WAV_HEADER_SIZE = 44;     // Standard WAV header size
 const DUPLICATE_TRANSCRIPT_WINDOW_MS = 12000;
-const FORCE_FINAL_SILENCE_MS = 2000;
-const FORCE_FINAL_SHORT_HOLD_MS = 1800;
-const FORCE_FINAL_SHORT_WORDS_MAX = 3;
-const FORCE_FINAL_SHORT_CHARS_MAX = 20;
+const FORCE_FINAL_SILENCE_MS = 3500; // Increased to 3.5s to prevent chopping half-sentences
+const FORCE_FINAL_SHORT_HOLD_MS = 3000; // Increased hold for short phrases
+const FORCE_FINAL_SHORT_WORDS_MAX = 4; // Increased word threshold slightly
+const FORCE_FINAL_SHORT_CHARS_MAX = 25;
 
 function normalizeForDedup(text) {
     return (text || '')
