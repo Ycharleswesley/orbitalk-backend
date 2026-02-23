@@ -8,6 +8,11 @@ const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 const { Buffer } = require('buffer');
 let firebaseAdmin = null;
+const { initRazorpay, handlePaymentRoutes } = require('./paymentService');
+
+// Initialize Razorpay
+initRazorpay();
+
 
 // GLOBAL ERROR HANDLERS
 process.on('uncaughtException', (err) => {
@@ -144,7 +149,13 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Hand over to payment service handler for payment routes
+    const isPaymentRouteHandled = await handlePaymentRoutes(req, res);
+    if (isPaymentRouteHandled) return;
+
     // Default response
+
+
     res.writeHead(404);
     res.end();
 });
@@ -303,6 +314,25 @@ wss.on('connection', (ws, req) => {
                     handleConfigMessage(ws, clientData, msg);
                 } else if (msg.type === 'chat') {
                     handleChatMessage(ws, clientData, msg.text);
+                } else if (msg.type === 'cancel_call' || msg.type === 'end_call') {
+                    // NEW: Handle Call Cancellation / Ending
+                    if (clientData.roomId) {
+                        console.log(`[${clientData.id}] Broadcasting Call User Cancel/End for Room: ${clientData.roomId}`);
+                        const room = rooms.get(clientData.roomId);
+                        if (room) {
+                            const endMsg = JSON.stringify({
+                                type: 'call_ended',
+                                reason: msg.reason || 'user_terminated',
+                                timestamp: new Date().toISOString()
+                            });
+
+                            room.forEach(client => {
+                                if (client.readyState === WebSocket.OPEN) {
+                                    client.send(endMsg);
+                                }
+                            });
+                        }
+                    }
                 }
             } catch (e) {
                 console.error('Error parsing JSON message:', e);
@@ -318,10 +348,17 @@ wss.on('connection', (ws, req) => {
             if (clientData.speechService) {
                 try {
                     clientData.lastAudioTime = Date.now();
+
+                    let pcmData = message;
+                    if (clientData.ignoreAudioUntil && Date.now() < clientData.ignoreAudioUntil) {
+                        // Software Mute: Prevent acoustic echo by feeding silence to Google STT
+                        pcmData = Buffer.alloc(message.length, 0);
+                    }
+
                     // Write incoming mic PCM directly to active stream.
                     try {
                         if (clientData.speechService) {
-                            clientData.speechService.write(message);
+                            clientData.speechService.write(pcmData);
                         }
                     } catch (e) {
                         console.log(`[${clientData.id}] Stream write error:`, e.message);
@@ -856,12 +893,24 @@ async function handleRecognizedText(ws, text, generation) {
             if (!isSessionActive(ws, clientData, generation)) break;
 
             if (audioBuffer && audioBuffer.length > 0) {
+                // Determine audio length in ms (16000Hz, 16-bit mono = 32 bytes per ms)
+                // Add 1200ms padding for network latency & playback buffering
+                const durationMs = Math.ceil(audioBuffer.length / 32) + 1200;
+                const ignoreUntil = Date.now() + durationMs;
+
                 if (room) {
                     if (room.size === 1 && ws.readyState === WebSocket.OPEN) {
+                        const cd = clients.get(ws);
+                        if (cd) cd.ignoreAudioUntil = Math.max(cd.ignoreAudioUntil || 0, ignoreUntil);
                         ws.send(audioBuffer);
                     }
                     room.forEach(client => {
                         if (client !== ws && client.readyState === WebSocket.OPEN) {
+                            const cd = clients.get(client);
+                            if (cd) {
+                                // Mute the receiving client's mic to prevent acoustic echo
+                                cd.ignoreAudioUntil = Math.max(cd.ignoreAudioUntil || 0, ignoreUntil);
+                            }
                             client.send(audioBuffer);
                         }
                     });
