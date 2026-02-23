@@ -353,6 +353,15 @@ wss.on('connection', (ws, req) => {
                     if (clientData.ignoreAudioUntil && Date.now() < clientData.ignoreAudioUntil) {
                         // Software Mute: Prevent acoustic echo by feeding silence to Google STT
                         pcmData = Buffer.alloc(message.length, 0);
+
+                        // CRITICAL FIX: Reset tracking variables during Mute Window
+                        // Otherwise, STT finalizes "Hello", and subsequent speech is stripped
+                        // because it thinks it's repeating the committed text.
+                        clientData.committedText = '';
+                        clientData.lastProcessedText = '';
+                        clientData.pendingForceText = '';
+                        clientData.hasPendingInterim = false;
+                        clientData.lastInterimText = null;
                     }
 
                     // Write incoming mic PCM directly to active stream.
@@ -531,13 +540,16 @@ function startSpeechService(ws, clientData, isRestart = false) {
             // 2. Handle partial new content if Google finalized a longer sentence than we forced
 
             let textToProcess = text;
+            console.log(`[${clientData.id}] Raw Natural Final: "${text}" | Committed: "${clientData.committedText}"`);
 
             if (clientData.committedText) {
                 if (textToProcess.startsWith(clientData.committedText)) {
                     // Strip the part we already forced
                     textToProcess = textToProcess.substring(clientData.committedText.length).trim();
+                    console.log(`[${clientData.id}] Stripped committed prefix. Remaining: "${textToProcess}"`);
                 } else if (textToProcess === clientData.committedText) {
                     textToProcess = ''; // Exact match, fully ignored
+                    console.log(`[${clientData.id}] Exact match with committed. Ignored.`);
                 }
             }
 
@@ -561,7 +573,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
                 console.log(`[${clientData.id}] Processing Natural Final (Suffix): "${textToProcess}"`);
                 handleRecognizedText(ws, textToProcess, streamGeneration);
             } else {
-                console.log(`[${clientData.id}] Ignored Natural Final (Duplicate/Empty)`);
+                console.log(`[${clientData.id}] Ignored Natural Final. IsDuplicate: ${isRecentDuplicate} (Last Processed: "${clientData.lastProcessedText}") | TextToSend: "${textToProcess}"`);
             }
         },
         (text) => {
@@ -726,14 +738,17 @@ function startSpeechService(ws, clientData, isRestart = false) {
             if (clientData.lastInterimText) {
 
                 let textToProcess = clientData.lastInterimText;
+                console.log(`[${clientData.id}] Raw Force Final (Silence): "${clientData.lastInterimText}" | Committed: "${clientData.committedText}"`);
 
                 // STRIP ACCUMULATED PREFIX (Fixes "Hello" -> "Hello How are you")
                 if (clientData.committedText && textToProcess.startsWith(clientData.committedText)) {
                     textToProcess = textToProcess.substring(clientData.committedText.length).trim();
+                    console.log(`[${clientData.id}] Stripped committed prefix. Remaining: "${textToProcess}"`);
                 }
 
                 // If nothing new, ignore (Fixes "Hello" -> "Hello" loop)
                 if (!textToProcess) {
+                    console.log(`[${clientData.id}] Force Final Ignored: Nothing new after stripping.`);
                     clientData.lastInterimText = null;
                     clientData.hasPendingInterim = false;
                     return;
@@ -744,6 +759,7 @@ function startSpeechService(ws, clientData, isRestart = false) {
                     normalized === clientData.lastProcessedText &&
                     (Date.now() - clientData.lastProcessedAt) < DUPLICATE_TRANSCRIPT_WINDOW_MS;
                 if (isRecentDuplicate) {
+                    console.log(`[${clientData.id}] Force Final Ignored. IsDuplicate: ${isRecentDuplicate} (Last Processed: "${clientData.lastProcessedText}")`);
                     clientData.lastInterimText = null;
                     clientData.hasPendingInterim = false;
                     return;
