@@ -106,6 +106,23 @@ async function handlePaymentRoutes(req, res, firebaseAdmin) {
                 if (expectedSignature === razorpay_signature) {
                     // Payment is successful, update Database
                     const pkg = PACKAGES[packageId];
+                    if (!firebaseAdmin) {
+                        try {
+                            const admin = require('firebase-admin');
+                            if (!admin.apps.length) {
+                                if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+                                    admin.initializeApp({ credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)) });
+                                    firebaseAdmin = admin;
+                                } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+                                    admin.initializeApp({ credential: admin.credential.cert(require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)) });
+                                    firebaseAdmin = admin;
+                                }
+                            } else {
+                                firebaseAdmin = admin;
+                            }
+                            console.log("Firebase Admin explicitly initialized inside payment processor.");
+                        } catch (e) { console.error("Firebase inline init failed:", e); }
+                    }
                     console.log(`Razorpay success! Validating DB update for User: ${userId}, Package: ${packageId}, PkgExists: ${!!pkg}, AdminExists: ${!!firebaseAdmin}`);
                     if (userId && pkg && firebaseAdmin) {
                         const db = firebaseAdmin.firestore();
