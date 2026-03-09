@@ -24,7 +24,7 @@ function initRazorpay() {
 }
 
 // Handle payment related requests
-async function handlePaymentRoutes(req, res) {
+async function handlePaymentRoutes(req, res, firebaseAdmin) {
     if (req.method === 'GET' && req.url === '/payment-packages') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(PACKAGES));
@@ -93,9 +93,8 @@ async function handlePaymentRoutes(req, res) {
                 if (expectedSignature === razorpay_signature) {
                     // Payment is successful, update Database
                     const pkg = PACKAGES[packageId];
-                    if (userId && pkg) {
-                        const admin = require('firebase-admin');
-                        const db = admin.firestore();
+                    if (userId && pkg && firebaseAdmin) {
+                        const db = firebaseAdmin.firestore();
                         const startDate = new Date();
                         const endDate = new Date();
                         endDate.setMonth(endDate.getMonth() + pkg.durationMonths);
@@ -107,8 +106,8 @@ async function handlePaymentRoutes(req, res) {
                             plan_end_date: endDate.toISOString(),
                             payment_id: razorpay_payment_id,
                             subscription_id: razorpay_order_id,
-                            remaining_messages: admin.firestore.FieldValue.increment(pkg.limitMessages),
-                            remaining_call_seconds: admin.firestore.FieldValue.increment(pkg.limitSeconds)
+                            remaining_messages: firebaseAdmin.firestore.FieldValue.increment(pkg.limitMessages),
+                            remaining_call_seconds: firebaseAdmin.firestore.FieldValue.increment(pkg.limitSeconds)
                         });
                     }
                     res.writeHead(200, { 'Content-Type': 'application/json' });

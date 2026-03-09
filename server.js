@@ -150,7 +150,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Hand over to payment service handler for payment routes
-    const isPaymentRouteHandled = await handlePaymentRoutes(req, res);
+    const isPaymentRouteHandled = await handlePaymentRoutes(req, res, firebaseAdmin);
     if (isPaymentRouteHandled) return;
 
     // Default response
