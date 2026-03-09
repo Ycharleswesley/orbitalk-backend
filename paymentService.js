@@ -93,6 +93,7 @@ async function handlePaymentRoutes(req, res, firebaseAdmin) {
                 if (expectedSignature === razorpay_signature) {
                     // Payment is successful, update Database
                     const pkg = PACKAGES[packageId];
+                    console.log(`Razorpay success! Validating DB update for User: ${userId}, Package: ${packageId}, PkgExists: ${!!pkg}, AdminExists: ${!!firebaseAdmin}`);
                     if (userId && pkg && firebaseAdmin) {
                         const db = firebaseAdmin.firestore();
                         const startDate = new Date();
@@ -109,6 +110,9 @@ async function handlePaymentRoutes(req, res, firebaseAdmin) {
                             remaining_messages: firebaseAdmin.firestore.FieldValue.increment(pkg.limitMessages),
                             remaining_call_seconds: firebaseAdmin.firestore.FieldValue.increment(pkg.limitSeconds)
                         });
+                        console.log(`Successfully updated Firestore for user ${userId} with package ${packageId}`);
+                    } else {
+                        console.log(`DB Update Skipped. Missing variable.`);
                     }
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ success: true, message: "Payment verified successfully" }));
