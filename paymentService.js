@@ -9,6 +9,7 @@ const PACKAGES = {
 };
 
 let razorpay = null;
+let debugPaymentInfo = {};
 
 // Initialize razorpay securely using environment variables
 function initRazorpay() {
@@ -83,12 +84,24 @@ async function handlePaymentRoutes(req, res, firebaseAdmin) {
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const { razorpay_order_id, razorpay_payment_id, razorpay_signature, packageId, userId } = JSON.parse(body);
+                const parsedBody = JSON.parse(body);
+                const { razorpay_order_id, razorpay_payment_id, razorpay_signature, packageId, userId } = parsedBody;
                 const text = razorpay_order_id + "|" + razorpay_payment_id;
                 const expectedSignature = crypto
                     .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
                     .update(text.toString())
                     .digest("hex");
+
+                debugPaymentInfo = {
+                    body: parsedBody,
+                    textStr: text.toString(),
+                    expectedSig: expectedSignature,
+                    receivedSig: razorpay_signature,
+                    keySecretLength: process.env.RAZORPAY_KEY_SECRET ? process.env.RAZORPAY_KEY_SECRET.length : 0,
+                    userId, packageId,
+                    pkgExists: !!PACKAGES[packageId],
+                    adminExists: !!firebaseAdmin
+                };
 
                 if (expectedSignature === razorpay_signature) {
                     // Payment is successful, update Database
@@ -126,6 +139,12 @@ async function handlePaymentRoutes(req, res, firebaseAdmin) {
                 res.end(JSON.stringify({ error: 'Verification Failed' }));
             }
         });
+        return true;
+    }
+
+    if (req.method === 'GET' && req.url === '/debug-payment') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(debugPaymentInfo));
         return true;
     }
 
