@@ -3,9 +3,9 @@ const Razorpay = require('razorpay');
 
 // Define the available packages and their details
 const PACKAGES = {
-    'bronze': { amount: 199, currency: 'INR', name: 'Bronze Pack' },
-    'silver': { amount: 499, currency: 'INR', name: 'Silver Pack' },
-    'gold': { amount: 999, currency: 'INR', name: 'Gold Pack' }
+    'bronze': { amount: 699, currency: 'INR', name: 'Bronze Pack', durationMonths: 1, limitSeconds: 10 * 60, limitMessages: 1000 },
+    'silver': { amount: 1299, currency: 'INR', name: 'Silver Pack', durationMonths: 3, limitSeconds: 20 * 60, limitMessages: 2000 },
+    'gold': { amount: 1999, currency: 'INR', name: 'Gold Pack', durationMonths: 6, limitSeconds: 45 * 60, limitMessages: 5000 }
 };
 
 let razorpay = null;
@@ -83,7 +83,7 @@ async function handlePaymentRoutes(req, res) {
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = JSON.parse(body);
+                const { razorpay_order_id, razorpay_payment_id, razorpay_signature, packageId, userId } = JSON.parse(body);
                 const text = razorpay_order_id + "|" + razorpay_payment_id;
                 const expectedSignature = crypto
                     .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
@@ -91,7 +91,26 @@ async function handlePaymentRoutes(req, res) {
                     .digest("hex");
 
                 if (expectedSignature === razorpay_signature) {
-                    // Payment is successful, you can update Database here
+                    // Payment is successful, update Database
+                    const pkg = PACKAGES[packageId];
+                    if (userId && pkg) {
+                        const admin = require('firebase-admin');
+                        const db = admin.firestore();
+                        const startDate = new Date();
+                        const endDate = new Date();
+                        endDate.setMonth(endDate.getMonth() + pkg.durationMonths);
+
+                        await db.collection('users').doc(userId).update({
+                            plan_type: packageId,
+                            plan_status: 'active',
+                            plan_start_date: startDate.toISOString(),
+                            plan_end_date: endDate.toISOString(),
+                            payment_id: razorpay_payment_id,
+                            subscription_id: razorpay_order_id,
+                            remaining_messages: admin.firestore.FieldValue.increment(pkg.limitMessages),
+                            remaining_call_seconds: admin.firestore.FieldValue.increment(pkg.limitSeconds)
+                        });
+                    }
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ success: true, message: "Payment verified successfully" }));
                 } else {
