@@ -103,32 +103,40 @@ async function handlePaymentRoutes(req, res, firebaseAdmin) {
                     adminExists: !!firebaseAdmin
                 };
 
+                // Ensure Firebase Admin is initialized before checking payments
+                if (!firebaseAdmin) {
+                    try {
+                        const admin = require('firebase-admin');
+                        if (!admin.apps.length) {
+                            if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+                                admin.initializeApp({ credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)) });
+                                firebaseAdmin = admin;
+                            } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+                                admin.initializeApp({ credential: admin.credential.cert(require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)) });
+                                firebaseAdmin = admin;
+                            } else {
+                                const fs = require('fs');
+                                if (fs.existsSync('./google-credentials.json')) {
+                                    admin.initializeApp({ credential: admin.credential.cert(JSON.parse(fs.readFileSync('./google-credentials.json', 'utf8'))) });
+                                    firebaseAdmin = admin;
+                                } else {
+                                    debugPaymentInfo.initError = "No Firebase creds found in ENV or fs.";
+                                }
+                            }
+                        } else {
+                            firebaseAdmin = admin;
+                        }
+                        console.log("Firebase Admin explicitly initialized inside payment processor.");
+                    } catch (e) {
+                        console.error("Firebase inline init failed:", e);
+                        debugPaymentInfo.initError = e.message;
+                    }
+                }
+                debugPaymentInfo.adminExistsFinal = !!firebaseAdmin;
+
                 if (expectedSignature === razorpay_signature) {
                     // Payment is successful, update Database
                     const pkg = PACKAGES[packageId];
-                    if (!firebaseAdmin) {
-                        try {
-                            const admin = require('firebase-admin');
-                            if (!admin.apps.length) {
-                                if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-                                    admin.initializeApp({ credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)) });
-                                    firebaseAdmin = admin;
-                                } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
-                                    admin.initializeApp({ credential: admin.credential.cert(require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)) });
-                                    firebaseAdmin = admin;
-                                } else {
-                                    const fs = require('fs');
-                                    if (fs.existsSync('./google-credentials.json')) {
-                                        admin.initializeApp({ credential: admin.credential.cert(JSON.parse(fs.readFileSync('./google-credentials.json', 'utf8'))) });
-                                        firebaseAdmin = admin;
-                                    }
-                                }
-                            } else {
-                                firebaseAdmin = admin;
-                            }
-                            console.log("Firebase Admin explicitly initialized inside payment processor.");
-                        } catch (e) { console.error("Firebase inline init failed:", e); }
-                    }
                     console.log(`Razorpay success! Validating DB update for User: ${userId}, Package: ${packageId}, PkgExists: ${!!pkg}, AdminExists: ${!!firebaseAdmin}`);
                     if (userId && pkg && firebaseAdmin) {
                         const db = firebaseAdmin.firestore();
