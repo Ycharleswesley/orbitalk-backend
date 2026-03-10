@@ -116,6 +116,12 @@ async function handlePaymentRoutes(req, res, firebaseAdmin) {
                                 } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
                                     admin.initializeApp({ credential: admin.credential.cert(require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)) });
                                     firebaseAdmin = admin;
+                                } else {
+                                    const fs = require('fs');
+                                    if (fs.existsSync('./google-credentials.json')) {
+                                        admin.initializeApp({ credential: admin.credential.cert(JSON.parse(fs.readFileSync('./google-credentials.json', 'utf8'))) });
+                                        firebaseAdmin = admin;
+                                    }
                                 }
                             } else {
                                 firebaseAdmin = admin;

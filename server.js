@@ -54,7 +54,17 @@ try {
             firebaseAdmin = admin;
             console.log('Firebase Admin initialized via FIREBASE_SERVICE_ACCOUNT_PATH');
         } else {
-            console.log('Firebase Admin not initialized (missing FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_PATH)');
+            const fs = require('fs');
+            if (fs.existsSync('./google-credentials.json')) {
+                const serviceAccount = JSON.parse(fs.readFileSync('./google-credentials.json', 'utf8'));
+                admin.initializeApp({
+                    credential: admin.credential.cert(serviceAccount),
+                });
+                firebaseAdmin = admin;
+                console.log('Firebase Admin initialized via fallback google-credentials.json');
+            } else {
+                console.log('Firebase Admin not initialized (missing FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_PATH or google-credentials.json)');
+            }
         }
     } else {
         firebaseAdmin = admin;
